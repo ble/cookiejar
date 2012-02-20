@@ -19,26 +19,17 @@ import (
 	"time"
 )
 
-// RejectPublicSuffixes forbids setting a domain cookie on an   If set to false one can set domain cookes even 
-// for TLDs like com or org.
-var RejectPublicSuffixes = true
-
 // -------------------------------------------------------------------------
 // Jar
 
 // A Jar implements the http CookieJar interface.
-type Jar struct {
-	lock    sync.Mutex // the BKL of our jar. TODO(vodo) replace by RWMutex
-	cookies []Cookie   // flat, unsorted list of current cookies stored
-
-	maxBytes     int  // maximum allowed for len(cookie.Name)+len(cooke.Value)
-	maxPerDomain int  // maximum amount of cookies allowed for one Key
-	maxTotal     int  // a total limit of how many cookies we are willing to keep
-	strict       bool // if false: be a bit more browserlike
-	rejectPS     bool // reject public suffixes as domain for domain cookie
-}
-
-// NewDefaultJar returns an empty, strictly RFC 6265 conforming cookie jar
+//
+// The MaxCookiesPerDomain and MaxCookiesTotal values may be changed at any 
+// time but won't take effect until the next SetCookies or Cleanup call. 
+// The MaxbytesperCookie valie may be changed at any time but will affect
+// only new cookies stored after the change.
+//
+// The empty value is a RFC 6265 conforming cookie jar
 // which rejects domain cookies for known "public suffixes" (effective top
 // level domains such as co.uk whose subdomain are typically not under one 
 // administrative control; see http://publicsuffix.org/)
@@ -46,26 +37,31 @@ type Jar struct {
 // The jar will allow 4096 bytes for len(name)+len(value) of each cookie, 3000 
 // cookies in toal and 50 cookies per domain. (These are the minimum numbers 
 // required by RFC 6265.
-func NewDefaultJar() *Jar {
-	return NewCustomJar(50, 3000, 4096, true, true)
+type Jar struct {
+	// Maximum number of cookies per logical domain. A vero value indicates
+	// 50 cookies per domain
+	MaxCookiesPerDomain int
+
+	// maximum total number of cookies in jar
+	MaxCookiesTotal int
+
+	// maximum nimber of byte for name + value of each cookie
+	MaxBytesPerCookie int
+
+	LaxMode         bool // be a bit more browser like
+	AllowAllDomains bool // allow domain cookies also for public suffixes
+
+	lock    sync.Mutex // the BKL of our jar. TODO(vodo) replace by RWMutex
+	cookies []Cookie   // flat, unsorted list of current cookies stored
+
 }
 
-// NewCustomJar returns an empty jar with custom parameters.
-//
-// Cookies where len(name)+len(value) exceeds maxBytesPerCookie will be
-// dropped.  If more than maxTotalCookies are stored in the jar in total
-// or if a single domain stores more than maxCookiesPerDomain, cookies
-// with the oldes last access timestamp will be discarded.
-//
-// If strict is true the jar will not allow host cookies from IP addresses
-// but allows a domain which is a public suffix to set a host cookie
-// by provididing a Domain in the Set-Cookie header. 
-func NewCustomJar(maxCookiesPerDomain, maxTotalCookies, maxBytesPerCookie int, strict bool, rejectPS bool) *Jar {
-	jar := Jar{maxPerDomain: maxCookiesPerDomain, maxTotal: maxTotalCookies,
-		maxBytes: maxBytesPerCookie, strict: strict, rejectPS: rejectPS}
-	jar.cookies = make([]Cookie, 0, 16)
-	return &jar
-}
+// default values if same name field in Jar is zero
+const (
+	MaxCookiesPerDomain = 50
+	MaxCookiesTotal     = 3000
+	MaxBytesPerCookie   = 4096
+)
 
 // SetCookies handles the receipt of the cookies in a reply for the given URL.
 //
@@ -87,8 +83,12 @@ func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 	defaultpath := defaultPath(u)
 	now := time.Now()
 
+	maxBytes := jar.MaxBytesPerCookie
+	if maxBytes == 0 {
+		maxBytes = MaxBytesPerCookie
+	}
 	for _, cookie := range cookies {
-		if len(cookie.Name)+len(cookie.Value) > jar.maxBytes {
+		if len(cookie.Name)+len(cookie.Value) > maxBytes {
 			continue
 		}
 
@@ -252,7 +252,7 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 	}
 
 	if isIP(host) {
-		if !jar.strict && domainAttr == host {
+		if jar.LaxMode && domainAttr == host {
 			// in non-strict mode: allow host cookie if both domain 
 			// and host are IP addresses and equal. (IE/FF/Chrome)
 			return host, true
@@ -282,12 +282,12 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 	}
 
 	// Prevent domain cookies for public suffixes / registries
-	if jar.rejectPS {
+	if !jar.AllowAllDomains {
 		covered, allowed, _ := publicsuffixRules.info(domain)
 		if covered && !allowed {
 			// the "domain is a public suffix case"
 
-			if jar.strict {
+			if !jar.LaxMode {
 				// RFC 6265 section 5.3:
 				// 5. If the user agent is configured to reject 
 				// "public suffixes" andthe domain-attribute is
@@ -434,25 +434,33 @@ func (jar *Jar) removeExcessCookies() {
 			cookiesForDomain[domain] = append(list, i)
 		}
 	}
+	maxPerDomain := jar.MaxCookiesPerDomain
+	if maxPerDomain == 0 {
+		maxPerDomain = MaxCookiesPerDomain
+	}
 	for _, ci := range cookiesForDomain {
-		if len(ci) <= jar.maxPerDomain {
+		if len(ci) <= maxPerDomain {
 			continue
 		}
 		// sort by LastAccess and remove seldomly used excess cookies
 		ss := cookieSubset{jar, ci}
 		sort.Sort(ss)
-		jar.deleteIdx(ss.idx[:len(ci)-jar.maxPerDomain])
+		jar.deleteIdx(ss.idx[:len(ci)-maxPerDomain])
 	}
 
 	// pass 2: limit total count
-	if len(jar.cookies) > jar.maxTotal {
+	maxTotal := jar.MaxCookiesTotal
+	if maxTotal == 0 {
+		maxTotal = MaxCookiesTotal
+	}
+	if len(jar.cookies) > maxTotal {
 		allIdx := make([]int, len(jar.cookies))
 		for i := range jar.cookies {
 			allIdx[i] = i
 		}
 		ss := cookieSubset{jar, allIdx}
 		sort.Sort(ss)
-		jar.deleteIdx(ss.idx[:len(jar.cookies)-jar.maxTotal])
+		jar.deleteIdx(ss.idx[:len(jar.cookies)-maxTotal])
 	}
 }
 

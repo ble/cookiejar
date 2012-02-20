@@ -5,9 +5,7 @@
 package cookiejar
 
 import (
-	"flag"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -135,7 +133,7 @@ var domainAndTypeTests = []struct {
 }
 
 func TestDomainAndType(t *testing.T) {
-	jar := NewDefaultJar()
+	jar := Jar{}
 	for _, test := range domainAndTypeTests {
 		d, h := jar.domainAndType(test.inHost, test.inCookieDomain)
 		if d != test.outDomain || h != test.outHostOnly {
@@ -148,7 +146,7 @@ func TestDomainAndType(t *testing.T) {
 
 func TestStrictnessWithIP(t *testing.T) {
 	// No (host cookies) for IP addresses in strict mode
-	jar := NewCustomJar(10, 10, 10, true, true)
+	jar := &Jar{MaxCookiesPerDomain: 10, MaxCookiesTotal: 10, MaxBytesPerCookie: 10}
 	d, h := jar.domainAndType("127.0.0.1", "127.0.0.1")
 	if d != "" {
 		t.Errorf("Got %s", d)
@@ -156,7 +154,7 @@ func TestStrictnessWithIP(t *testing.T) {
 
 	// Allow host cookies for IP addresses like IE, FF and Chrome
 	// if non-strict jar.
-	jar = NewCustomJar(10, 10, 10, false, true)
+	jar = &Jar{MaxCookiesPerDomain: 10, MaxCookiesTotal: 10, MaxBytesPerCookie: 10, LaxMode: true}
 	d, h = jar.domainAndType("127.0.0.1", "127.0.0.1")
 	if d != "127.0.0.1" || h != true {
 		t.Errorf("Got %s and %t", d, h)
@@ -299,7 +297,7 @@ func present(jar *Jar, tt updateTest, now time.Time, t *testing.T) bool {
 }
 
 func TestUpdate(t *testing.T) {
-	jar := NewDefaultJar()
+	jar := &Jar{}
 
 	now := time.Now()
 	for _, tt := range updateTests {
@@ -620,7 +618,7 @@ var singleJarTests = []jarTest{
 
 func TestSingleJar(t *testing.T) {
 	for _, tt := range singleJarTests {
-		jar := NewDefaultJar()
+		jar := &Jar{}
 		runJarTest(t, jar, tt)
 	}
 }
@@ -718,7 +716,7 @@ var groupedJarTests = [][]jarTest{
 
 func TestGroupedJar(t *testing.T) {
 	for _, ttt := range groupedJarTests {
-		jar := NewDefaultJar()
+		jar := &Jar{}
 		for _, tt := range ttt {
 			runJarTest(t, jar, tt)
 		}
@@ -846,7 +844,7 @@ func (jar *Jar) allNames() string {
 }
 
 func TestMaxTotal(t *testing.T) {
-	jar := NewCustomJar(100, 3, 4096, true, true) // at most 3 cookies in total in jar
+	jar := &Jar{MaxCookiesPerDomain: 100, MaxCookiesTotal: 3} // at most 3 cookies in total in jar
 	u, _ := url.Parse("http://www.example.com")
 
 	// fill up to capacity
@@ -890,7 +888,7 @@ func TestMaxTotal(t *testing.T) {
 }
 
 func TestMaxPerDomain(t *testing.T) {
-	jar := NewCustomJar(2, 100, 4096, true, true) // at most 2 cookies per domain
+	jar := &Jar{MaxCookiesPerDomain: 2, MaxCookiesTotal: 100} // at most 2 cookies per domain
 	u1, _ := url.Parse("http://first.domain")
 	u2, _ := url.Parse("http://second.domain")
 	u3, _ := url.Parse("http://third.domain")
@@ -940,7 +938,7 @@ func TestMaxPerDomain(t *testing.T) {
 }
 
 func TestExpiresCleanup(t *testing.T) {
-	jar := NewDefaultJar()
+	jar := Jar{}
 	u, _ := url.Parse("http://www.example.com")
 
 	// fill up some cookies 
@@ -965,7 +963,7 @@ func TestExpiresCleanup(t *testing.T) {
 }
 
 func TestHonourLastAccesInCleanup(t *testing.T) {
-	jar := NewCustomJar(100, 6, 4096, true, true) // at most 6 cookies  
+	jar := &Jar{MaxCookiesPerDomain: 100, MaxCookiesTotal: 6} // at most 6 cookies  
 	u, _ := url.Parse("http://www.example.com")
 	uB, _ := url.Parse("http://www.example.com/B/too")
 
@@ -1013,7 +1011,7 @@ func TestGob(t *testing.T) {
 		now.Add(100 * time.Millisecond), false, now, now}
 
 	// artificially put them into jar
-	jar := NewDefaultJar()
+	jar := Jar{}
 	jar.cookies = []Cookie{session, expired, persistent1, persistent2}
 
 	// gob encode and re-decode jar
@@ -1052,120 +1050,5 @@ func TestGob(t *testing.T) {
 
 	if !reflect.DeepEqual(persistent1, jar.cookies[0]) {
 		t.Errorf("Expected %v\ngot %v", persistent1, jar.cookies[0])
-	}
-}
-
-// -------------------------------------------------------------------------
-// Benchmarking Stuff
-
-// The following are used to construct host names.  All should have different prime length.
-var path = []string{"/", "/abc", "/abc/xyz", "/yuhu", "/yuhu/aloha"} // 5
-
-var tld = []string{".com", ".net", ".org", ".info", ".biz", ".uk", ".de",
-	".ai", ".ag", ".af", ".al", ".au", ".uk", ".gr", ".hk",
-	".qr", ".st", ".uv", ".wx", ".yz", ".qw", ".as", ".er"} // 23
-var tldp1 = []string{"foo", "bar", "baz", "qux", "co", "blob", "com",
-	"wup", "long", "longer", "realy-very-long", "ugggglllly-lllloooonnnnnnng",
-	"aaa", "bbb", "ccc", "ddd", "eee", "fff", "ggg", "hhh",
-	"iii", "jjj", "kkk", "lll", "mmm", "gov", "edu", "org", "net"} // 29
-var tldp2 = []string{"www.", "sso.", "info.", "aaa.", "bbb.", "ccc.", "d.",
-	"e.", "f.", "g.", "h.", "i.", "j."} // 13
-var names = []string{"session", "name", "foobar", "W_UzTzk", "x", "a", "b",
-	"c", "d", "e", "f", "g", "h", "iiiiiiiiiii", "JJJJJJJJJJJJJ", "k",
-	"l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "XXXXX",
-	"YYYYYY", "ZzZzZz"} // 31
-
-var hostPerc = flag.Int("host", 21, "make that percentage to host cookies")
-var sessionPerc = flag.Int("session", 31, "make that percentage persistant")
-var shortlivedPerc = flag.Int("mayfly", 29, "make that percentage of persistant cookie shortlived")
-
-type uAndC struct {
-	u *url.URL
-	c []*http.Cookie
-}
-
-func prepare(n int) []uAndC {
-	cookies := make([]uAndC, n)
-	for i := 0; i < n; i++ {
-		host := tldp2[i%len(tldp2)] + tldp1[i%len(tldp1)] + tld[i%len(tld)]
-
-		cookie := http.Cookie{Name: names[i%len(names)], Value: "CookieValue", Path: path[i%len(path)]}
-		if rand.Intn(100) < *hostPerc {
-			cookie.Domain = "." + host
-		}
-		if rand.Intn(100) < *sessionPerc {
-			if rand.Intn(100) < *shortlivedPerc {
-				cookie.MaxAge = 2
-			} else {
-				cookie.MaxAge = 999999999
-			}
-		}
-
-		cookies[i].u, _ = url.Parse("http://" + host)
-		cookies[i].c = make([]*http.Cookie, 1)
-		cookies[i].c[0] = &cookie
-	}
-	return cookies
-}
-
-func BenchmarkCreateCookies(b *testing.B) {
-	b.StopTimer()
-	cookies := prepare(b.N)
-	jar := NewCustomJar(5000, 20000, 4096, true, true)
-
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		jar.SetCookies(cookies[i].u, cookies[i].c)
-	}
-}
-
-func BenchmarkUpdateCookies(b *testing.B) {
-	b.StopTimer()
-	cookies := prepare(b.N)
-	jar := NewCustomJar(5000, 20000, 4096, true, true)
-
-	// create
-	for i := 0; i < b.N; i++ {
-		jar.SetCookies(cookies[i].u, cookies[i].c)
-	}
-	for i := 0; i < b.N; i++ {
-		cookies[i].c[0].Value = "NewValue"
-	}
-
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		jar.SetCookies(cookies[i].u, cookies[i].c)
-	}
-}
-
-func BenchmarkDeleteCookies(b *testing.B) {
-	b.StopTimer()
-	cookies := prepare(b.N)
-	jar := NewCustomJar(5000, 20000, 4096, true, true)
-
-	// create
-	for i := 0; i < b.N; i++ {
-		jar.SetCookies(cookies[i].u, cookies[i].c)
-	}
-	for i := 0; i < b.N; i++ {
-		cookies[i].c[0].MaxAge = -1
-	}
-
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		jar.SetCookies(cookies[i].u, cookies[i].c)
-	}
-}
-
-func BenchmarkCookieRetrieval(b *testing.B) {
-	b.StopTimer()
-	cookies := prepare(b.N)
-	jar := NewCustomJar(5000, 20000, 4096, true, true)
-	for _, x := range cookies {
-		jar.SetCookies(x.u, x.c)
-	}
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		jar.Cookies(cookies[i].u)
 	}
 }

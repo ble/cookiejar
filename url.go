@@ -1,16 +1,21 @@
-// Copyright 2012 The Go Authors. All rights reserved.
+// Copyright 2012 Volker Dobler. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
 package cookiejar
 
-// Some utility functions which operate on URLs or parts if an URL.
+// Some utility functions which operate on URLs or parts if an URL
+// and on domain names.
 
 import (
 	"net"
 	"net/url"
 	"strings"
 )
+
+func logigalDomain(domain string) {
+
+}
 
 // Host returns the (canonical) host from an URL u.
 // If the 
@@ -27,8 +32,12 @@ func host(u *url.URL) (string, error) {
 	}
 
 	// TODO: handle canonicalisation if really needed
+	canhost, err := host, nil //  idna.ToASCII(host)
+	if err != nil {
+		return host, err
+	}
 
-	return host, nil
+	return canhost, nil
 }
 
 // isSecure checks for https scheme
