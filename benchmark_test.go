@@ -78,10 +78,11 @@ func BenchmarkInsertSetJar(b *testing.B) {
 
 // insert into half full jar
 func BenchmarkInsertHalfJar(b *testing.B) {
+	jar := &Jar{}
+	fillJar(jar, 0.75, 0.75)
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		jar := &Jar{}
-		fillJar(jar, 0.75, 0.75)
+		theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
 		b.StartTimer()
 		jar.SetCookies(exampleUrl, exampleCookies)
 	}
@@ -89,10 +90,11 @@ func BenchmarkInsertHalfJar(b *testing.B) {
 
 // insert into completely full jar, thus deletion of exxess cookies
 func BenchmarkInsertFullJar(b *testing.B) {
+	jar := &Jar{}
+	fillJar(jar, 1, 1)
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		jar := &Jar{}
-		fillJar(jar, 1, 1)
+		theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
 		b.StartTimer()
 		jar.SetCookies(exampleUrl, exampleCookies)
 	}
@@ -192,6 +194,7 @@ func BenchmarkAppUsage(b *testing.B) {
 		&http.Cookie{Name: "nameC", Value: "value3"},
 		&http.Cookie{Name: "nameD", Value: "value4", Domain: "host2.biz", MaxAge: 600},
 	}
+
 	for i := 0; i < b.N; i++ {
 		jar := Jar{}
 		for k := 0; k < 5; k++ {

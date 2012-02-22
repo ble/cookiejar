@@ -41,10 +41,14 @@ type psStorage [][]string
 //       additional label.
 func (ps psStorage) info(domain string) (covered, allow bool, etdl string) {
 	domainRev := splitAndReverse(strings.ToLower(domain))
-	rule := ps.rule(domainRev)
+	rule := ps.rule(domain)
 	if len(rule) == 0 {
 		// no rule
-		return false, false, ""
+		etdl = domainRev[0]
+		if len(domainRev) > 1 {
+			etdl = domainRev[1] + "." + etdl
+		}
+		return false, false, etdl
 	}
 	covered = true
 
@@ -68,6 +72,39 @@ func (ps psStorage) info(domain string) (covered, allow bool, etdl string) {
 	return
 }
 
+type Rule []string
+
+type cacheEntry struct {
+	domain string
+	rule   Rule
+}
+type ruleCache struct {
+	cache []cacheEntry
+	idx   int
+}
+
+func (rc ruleCache) Lookup(domain string) *Rule {
+	for _, e := range rc.cache {
+		if e.domain == domain {
+			return &e.rule
+		}
+	}
+	return nil
+}
+func (rc *ruleCache) Store(domain string, rule Rule) {
+	if rc.idx == len(rc.cache) {
+		rc.cache = append(rc.cache, cacheEntry{domain, rule})
+	} else {
+		rc.cache[rc.idx] = cacheEntry{domain, rule}
+	}
+	rc.idx++
+	if rc.idx == cap(rc.cache) {
+		rc.idx = 0
+	}
+}
+
+var theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
+
 // find rule in ps best matching domain (given in spliied and reversed form.
 // Algorithm from http://publicsuffix.org/list/:
 //    1. Match domain against all rules and take note of the matching ones.
@@ -88,7 +125,13 @@ func (ps psStorage) info(domain string) (covered, allow bool, etdl string) {
 // of "listed" for "really.not.listed" which is not a public suffix.
 //
 // call with split and reversed domain and get the rule back in same format
-func (ps psStorage) rule(domainRev []string) []string {
+func (ps psStorage) rule(domain string) []string {
+
+	if rule := theRuleCache.Lookup(domain); rule != nil {
+		return []string(*rule)
+	}
+	domainRev := splitAndReverse(domain)
+
 	rule := []string{} // (2) but adopted
 
 	var exceptionRule []string
@@ -113,10 +156,12 @@ func (ps psStorage) rule(domainRev []string) []string {
 
 	if exceptionRule != nil {
 		// fmt.Printf("Rule for %v (exception) %v\n", domainRev, exceptionRule)
+		theRuleCache.Store(domain, exceptionRule)
 		return exceptionRule
 	}
 
 	// fmt.Printf("Rule for %v (longest) %v\n", domainRev, rule)
+	theRuleCache.Store(domain, rule)
 	return rule
 }
 

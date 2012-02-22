@@ -50,9 +50,8 @@ var ruleTests = []struct{ domain, rule string }{
 
 func TestRule(t *testing.T) {
 	for _, test := range ruleTests {
-		domainRev := splitAndReverse(test.domain)
 		trr := splitAndReverse(test.rule)
-		rule := publicsuffixRules.rule(domainRev)
+		rule := publicsuffixRules.rule(test.domain)
 
 		if !reflect.DeepEqual(rule, trr) {
 			t.Errorf("Test %s got %v want %v", test.domain, rule, trr)
@@ -197,6 +196,50 @@ func TestPublicsuffix(t *testing.T) {
 	}
 }
 
+func TestRuleCache(t *testing.T) {
+	theRuleCache = ruleCache{make([]cacheEntry, 2), 0}
+	a := theRuleCache.Lookup("a.com")
+	if a != nil {
+		t.Errorf("Got %v", *a)
+	}
+	theRuleCache.Store("a.com", []string{"a"})
+
+	b := theRuleCache.Lookup("b.com")
+	if b != nil {
+		t.Errorf("Got %v", *b)
+	}
+	theRuleCache.Store("b.com", []string{"b"})
+
+	a = theRuleCache.Lookup("a.com")
+	if a == nil || []string(*a)[0] != "a" {
+		t.Errorf("Bad a")
+	}
+	b = theRuleCache.Lookup("b.com")
+	if b == nil || []string(*b)[0] != "b" {
+		t.Errorf("Bad b")
+	}
+
+	c := theRuleCache.Lookup("c.com")
+	if c != nil {
+		t.Errorf("Got %v", *c)
+	}
+	theRuleCache.Store("c.com", []string{"c"})
+
+	a = theRuleCache.Lookup("a.com")
+	if a != nil {
+		t.Errorf("Got %v\n%v", *a, theRuleCache)
+	}
+	b = theRuleCache.Lookup("b.com")
+	if b == nil || []string(*b)[0] != "b" {
+		t.Errorf("Bad b")
+	}
+	c = theRuleCache.Lookup("c.com")
+	if c == nil || []string(*c)[0] != "c" {
+		t.Errorf("Bad c")
+	}
+
+}
+
 func BenchmarkRule(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
@@ -208,9 +251,14 @@ func BenchmarkRule(b *testing.B) {
 		} else if domain[last] == "*" {
 			domain[last] = "anything"
 		}
+		ds := domain[last]
+		for _, d := range domain[:len(domain)-1] {
+			ds = d + "." + ds
+		}
+
 		b.StartTimer()
 
-		r := publicsuffixRules.rule(domain)
+		r := publicsuffixRules.rule(ds)
 
 		if !reflect.DeepEqual(r, publicsuffixRules[n]) {
 			fmt.Sprintf("Oops: %v %v", r, publicsuffixRules[n])

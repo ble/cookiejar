@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"reflect"
+	// "reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -135,7 +135,7 @@ var domainAndTypeTests = []struct {
 func TestDomainAndType(t *testing.T) {
 	jar := Jar{}
 	for _, test := range domainAndTypeTests {
-		d, h := jar.domainAndType(test.inHost, test.inCookieDomain)
+		d, h, _ := jar.domainAndType(test.inHost, test.inCookieDomain)
 		if d != test.outDomain || h != test.outHostOnly {
 			t.Errorf("Test %s/%s want %s/%t got %s/%t",
 				test.inHost, test.inCookieDomain,
@@ -147,7 +147,7 @@ func TestDomainAndType(t *testing.T) {
 func TestStrictnessWithIP(t *testing.T) {
 	// No (host cookies) for IP addresses in strict mode
 	jar := &Jar{MaxCookiesPerDomain: 10, MaxCookiesTotal: 10, MaxBytesPerCookie: 10}
-	d, h := jar.domainAndType("127.0.0.1", "127.0.0.1")
+	d, h, _ := jar.domainAndType("127.0.0.1", "127.0.0.1")
 	if d != "" {
 		t.Errorf("Got %s", d)
 	}
@@ -155,7 +155,7 @@ func TestStrictnessWithIP(t *testing.T) {
 	// Allow host cookies for IP addresses like IE, FF and Chrome
 	// if non-strict jar.
 	jar = &Jar{MaxCookiesPerDomain: 10, MaxCookiesTotal: 10, MaxBytesPerCookie: 10, LaxMode: true}
-	d, h = jar.domainAndType("127.0.0.1", "127.0.0.1")
+	d, h, _ = jar.domainAndType("127.0.0.1", "127.0.0.1")
 	if d != "127.0.0.1" || h != true {
 		t.Errorf("Got %s and %t", d, h)
 	}
@@ -265,39 +265,42 @@ var updateTests = []updateTest{
 
 func present(jar *Jar, tt updateTest, now time.Time, t *testing.T) bool {
 	// blunt search over everything
-	for _, c := range jar.cookies {
-		if c.Name != tt.cname {
-			continue
-		}
+	for _, flat := range jar.storage {
+		for _, c := range flat.cookies {
+			if c.Name != tt.cname || c.Expires == longAgo {
+				continue
+			}
 
-		if c.Value != tt.cvalue {
-			t.Errorf("Cookie %s got value %s want %s", tt.cname, c.Value, tt.cvalue)
-		}
-		if c.Domain != tt.edomain {
-			t.Errorf("Cookie %s got domain %s want %s", tt.cname, c.Domain, tt.edomain)
-		}
-		if c.HostOnly != tt.ehostonly {
-			t.Errorf("Cookie %s got hostonly %t want %t", tt.cname, c.HostOnly, tt.ehostonly)
-		}
-		if c.Path != tt.epath {
-			t.Errorf("Cookie %s got path %s want %s", tt.cname, c.Path, tt.epath)
-		}
-		if tt.eexp == -999 && !c.Expires.IsZero() {
-			t.Errorf("Cookie %s got persisten cookie with ttl %d s want session cookie",
-				tt.cname, int(c.Expires.Sub(now).Seconds()))
-		}
-		if tt.eexp != -999 && now.Add(time.Duration(tt.eexp)*time.Second) != c.Expires {
-			t.Errorf("Cookie %s got persistent cookie with ttl %d s want ttl of %d",
-				tt.cname, int(c.Expires.Sub(now).Seconds()), tt.eexp)
+			if c.Value != tt.cvalue {
+				t.Errorf("Cookie %s got value %s want %s", tt.cname, c.Value, tt.cvalue)
+			}
+			if c.Domain != tt.edomain {
+				t.Errorf("Cookie %s got domain %s want %s", tt.cname, c.Domain, tt.edomain)
+			}
+			if c.HostOnly != tt.ehostonly {
+				t.Errorf("Cookie %s got hostonly %t want %t", tt.cname, c.HostOnly, tt.ehostonly)
+			}
+			if c.Path != tt.epath {
+				t.Errorf("Cookie %s got path %s want %s", tt.cname, c.Path, tt.epath)
+			}
+			if tt.eexp == -999 && !c.Expires.IsZero() {
+				t.Errorf("Cookie %s got persisten cookie with ttl %d s want session cookie",
+					tt.cname, int(c.Expires.Sub(now).Seconds()))
+			}
+			if tt.eexp != -999 && now.Add(time.Duration(tt.eexp)*time.Second) != c.Expires {
+				t.Errorf("Cookie %s got persistent cookie with ttl %d s want ttl of %d",
+					tt.cname, int(c.Expires.Sub(now).Seconds()), tt.eexp)
 
+			}
+			return true
 		}
-		return true
 	}
 	return false
 }
 
 func TestUpdate(t *testing.T) {
 	jar := &Jar{}
+	jar.storage = make(map[string]*flatJar)
 
 	now := time.Now()
 	for _, tt := range updateTests {
@@ -835,9 +838,11 @@ func parseCookie(s string) *http.Cookie {
 // serialize all cookie names into one string after sorting names
 // e.g. "a;b;x"
 func (jar *Jar) allNames() string {
-	names := make([]string, len(jar.cookies))
-	for i, c := range jar.cookies {
-		names[i] = c.Name
+	names := make([]string, 0)
+	for _, flat := range jar.storage {
+		for _, c := range flat.cookies {
+			names = append(names, c.Name)
+		}
 	}
 	sort.Strings(names)
 	return strings.Join(names, ";")
@@ -998,6 +1003,7 @@ func TestHonourLastAccesInCleanup(t *testing.T) {
 
 }
 
+/************
 func TestGob(t *testing.T) {
 	// set up some cookies
 	now := time.Now()
@@ -1052,3 +1058,4 @@ func TestGob(t *testing.T) {
 		t.Errorf("Expected %v\ngot %v", persistent1, jar.cookies[0])
 	}
 }
+***************/

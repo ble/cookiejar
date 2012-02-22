@@ -22,6 +22,8 @@ type Cookie struct {
 	LastAccess   time.Time // for internal bookkeeping: keep recently used cookies
 }
 
+var longAgo = time.Date(1, time.March, 2, 4, 5, 6, 0, time.UTC)
+
 // Attach method of sort.Interface to []*Cookie
 type cookieList []*Cookie
 
