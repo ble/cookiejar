@@ -7,7 +7,7 @@ package cookiejar
 import (
 	"strings"
 	"time"
-	"fmt"
+	// "fmt"
 )
 
 // Cookie is the internal representation of a cookie in our jar.
@@ -24,7 +24,10 @@ type Cookie struct {
 
 // check if cookie Name is set
 func (c *Cookie) empty() bool {
-	return len(c.Name)==0 
+	return len(c.Name) == 0
+}
+func (c *Cookie) clear() {
+	c.Name, c.Value = "", ""
 }
 
 var (
@@ -53,9 +56,9 @@ func (cl cookieList) Swap(i, j int) {
 // shouldSend determines whether to send cookie via a secure request
 // to host with path. 
 func (c *Cookie) shouldSend(host, path string, secure bool) bool {
-	fmt.Printf("shouldSend(%s=%s  to  %s %s %t): %t %t %t %t\n",
-		c.Name, c.Value, host, path, secure,
-		c.domainMatch(host), c.pathMatch(path), !c.isExpired(),	secureEnough(c.Secure, secure))
+	// fmt.Printf("shouldSend(%s=%s  to  %s %s %t): %t %t %t %t\n",
+	//	c.Name, c.Value, host, path, secure,
+	//	c.domainMatch(host), c.pathMatch(path), !c.isExpired(),	secureEnough(c.Secure, secure))
 	return c.domainMatch(host) &&
 		c.pathMatch(path) &&
 		!c.isExpired() &&

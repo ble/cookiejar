@@ -20,6 +20,8 @@ import (
 	"time"
 )
 
+var _ = fmt.Println
+
 // -------------------------------------------------------------------------
 // Jar
 
@@ -53,26 +55,27 @@ type Jar struct {
 	AllowAllDomains bool // allow domain cookies also for public suffixes
 
 	lock    sync.Mutex // the BKL of our jar. TODO(vodo) replace by RWMutex
-	once    sync.Once
+	once    sync.Once  // TODO: replace with constructor
 	storage map[string]*flatJar
 
-	total int
+	total int // allocate spece in total = \sum_{f\in storage} len(f.cookies)
+	empty int // known entries in total to be empty i.e. expired or delted
 }
 
-func (jar *Jar) maxCookiesTotal() int { 
-	return defaultVal(jar.MaxCookiesTotal, MaxCookiesTotal) 
+func (jar *Jar) maxCookiesTotal() int {
+	return defaultVal(jar.MaxCookiesTotal, MaxCookiesTotal)
 }
 func (jar *Jar) maxCookiesPerDomain() int {
 	return defaultVal(jar.MaxCookiesPerDomain, MaxCookiesPerDomain)
 }
-func (jar *Jar) maxBytesPerCookie() int { 
-	return defaultVal(jar.MaxBytesPerCookie, MaxBytesPerCookie) 
+func (jar *Jar) maxBytesPerCookie() int {
+	return defaultVal(jar.MaxBytesPerCookie, MaxBytesPerCookie)
 }
 func defaultVal(val, dflt int) int {
 	if val == 0 {
 		return dflt
 	} else if val < 0 {
-		return 1<<31 - 1  // MaxInt32
+		return 1<<31 - 1 // MaxInt32
 	}
 	return val
 }
@@ -80,18 +83,8 @@ func defaultVal(val, dflt int) int {
 type flatJar struct {
 	// not a RWMutex as there is no "read only" access to a cookie as 
 	// we have to update LastAccess if we choose to send the cookie
-	lock    sync.Mutex  
-	cookies []Cookie   // flat list of cookies here
-}
-
-// check if no cookies stored here
-func (fj *flatJar) empty() bool {
-	for _, cookie := range fj.cookies {
-		if ! cookie.isExpired() {
-			return false
-		}
-	}
-	return true
+	lock    sync.Mutex
+	cookies []Cookie // flat list of cookies here
 }
 
 // default values if same name field in Jar is zero
@@ -126,17 +119,27 @@ func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 
 	_, _, domainKey := publicsuffixRules.info(host)
 
-	fmt.Printf("SetCookies()  host=%s  domainKey=%s  defaultPath=%s\n",
-		host, domainKey, defaultpath)
+	// fmt.Printf("SetCookies()  host=%s  domainKey=%s  defaultPath=%s\n",
+	//	host, domainKey, defaultpath)
+
 	for _, cookie := range cookies {
 		if len(cookie.Name)+len(cookie.Value) > maxBytes {
 			continue
 		}
 
-		
 		action := jar.update(domainKey, nil, host, defaultpath, now, cookie)
-		
-		fmt.Printf("Action for cookie %s=%s: %d\n", cookie.Name, cookie.Value, action) 
+
+		switch action {
+		case createCookie:
+			jar.total++
+		case updateCookie, invalidCookie, noSuchCookie:
+			// nothing
+		case deleteCookie:
+			jar.empty++
+		default:
+			panic("Ooops")
+		}
+		// fmt.Printf("Action for cookie %s=%s: %d\n", cookie.Name, cookie.Value, action) 
 
 		// make sure every cookie has a distinct creation time
 		// which can be used to sort them properly on retrieval.
@@ -148,68 +151,104 @@ func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 	jar.cleanup()
 }
 
+// cleanup handles the MaxCookiesTotal policy and will delete/cleanup
+// our storage once it starts to fill
 func (jar *Jar) cleanup() {
-	// remove exess (in total) cookies: do expensive counting and removal 
-	// only if there might be too many (non-expired) cookies
-	total := 0
-	expired := 0
-	for _, flat := range jar.storage {
-		total += len(flat.cookies)
-	}
-	if total > jar.maxCookiesTotal() {
-		expired = jar.expireExessCookies()
-		
-	}
-
-	// remove all domains without cookies
-	for dk := range jar.storage {
-		if jar.storage[dk].empty() {
-			expired -= len(jar.storage[dk].cookies)
-			delete(jar.storage, dk)
-		}
-	}
-}
-
-// set all exess cookies (based on MaxCookiesTotal) to expired
-// and report total number of expired cookies
-func (jar *Jar) expireExessCookies() (expired int) {
-	total := 0
-	allowed := jar.maxCookiesTotal()
-
-	// count number of really used (aka non-expired) cookies
-	for _, flat := range jar.storage {
-		for _, cookie := range flat.cookies {
-			if cookie.isExpired() {
-				expired++
-			} else {
-				total++
-			} 
-		}
-		
-	}
-	exess := total - allowed
-	if exess <= 0 {
+	// do not do anything if we are still clear below our allowed
+	// allocation limit
+	maxTotal := jar.maxCookiesTotal()
+	if jar.total <= maxTotal/2 {
+		// fmt.Printf("no cleanup action %d %d\n", jar.total, maxTotal)
 		return
 	}
 
-	toDel := cookieSubset(make([]*Cookie, 0, 3*exess))
+	// remove domains without cookies
+	for dk := range jar.storage {
+		flat := jar.storage[dk]
+		allocated := len(flat.cookies)
+		valid := 0
+		for i := range flat.cookies {
+			if flat.cookies[i].empty() {
+				continue
+			}
+			if flat.cookies[i].isExpired() {
+				flat.cookies[i].clear()
+				jar.empty++
+				continue
+			}
+			valid++
+		}
+		if valid == 0 {
+			// no more cookies for this domain, remove from storage
+			// fmt.Printf("Removing domain %s with %d empties\n", dk, allocated)
+			jar.total -= allocated
+			jar.empty -= allocated
+			delete(jar.storage, dk)
+		}
+	}
+
+	// fmt.Printf("usage now %d %d (limit %d)\n", jar.total, jar.empty, maxTotal)
+
+	current := jar.total - jar.empty
+	if current > maxTotal {
+		jar.clearExessCookies(current - maxTotal)
+	}
+
+	// shrink jar onls if there is space wasted. 10 cookies or
+	// 1% of the allowed total is not wasted
+	if jar.empty < 10 || jar.empty < jar.total/100 {
+		// fmt.Printf("no big cleanup %d %d %d\n", jar.total, jar.empty, maxTotal)
+		return
+	}
+
+	// the big cleanup: remove any sparse flat storage with a
+	// non-sparse one (not containing empty/expired cookies)
 	for _, flat := range jar.storage {
-	 	for i := range flat.cookies {
+		empty := 0
+		for _, cookie := range flat.cookies {
+			if cookie.empty() {
+				empty++
+			}
+		}
+		if empty == 0 {
+			continue
+		}
+		nc := make([]Cookie, len(flat.cookies)-empty)
+		i := 0
+		for _, cookie := range flat.cookies {
+			if cookie.empty() {
+				continue
+			}
+			nc[i] = cookie
+			i++
+		}
+		flat.cookies = nc
+	}
+
+}
+
+// clear the exess many cookies with the oldest lastAccess time
+func (jar *Jar) clearExessCookies(excess int) {
+	toDel := cookieSubset(make([]*Cookie, 0, 4*excess))
+	for _, flat := range jar.storage {
+		for i := range flat.cookies {
+			if flat.cookies[i].empty() {
+				continue
+			}
 			toDel = append(toDel, &flat.cookies[i])
-			if len(toDel) >= 3*exess {
+			if len(toDel) == cap(toDel) {
 				sort.Sort(toDel)
-				toDel = toDel[:exess]
+				toDel = toDel[:excess]
 			}
 		}
 	}
 	sort.Sort(toDel)
-	toDel = toDel[:exess]
+	toDel = toDel[:excess]
 	for _, cookie := range toDel {
-		cookie.Expires = longAgo
-		expired++
+		// fmt.Printf("clearing excess %s=%s\n", cookie.Name, cookie.Value)
+		cookie.clear()
 	}
-	
-	return
+	jar.empty += excess
 }
 
 /********
@@ -261,11 +300,11 @@ func (jar *Jar) GobDecode(buf []byte) error {
 type updateAction int
 
 const (
-	invalidCookie updateAction = iota 
+	invalidCookie updateAction = iota
 	createCookie
 	updateCookie
 	deleteCookie
-	noSuchCookie  // delete a non-existing Cookie
+	noSuchCookie // delete a non-existing Cookie
 )
 
 // update is the workhorse which stores, updates or deletes the recieved cookie
@@ -322,7 +361,7 @@ func (jar *Jar) update(domainKey string, flat *flatJar, host, defaultpath string
 		// completely new domain
 		flat = &flatJar{cookies: make([]Cookie, 1)}
 		jar.storage[domainKey] = flat
-		fmt.Printf("new flat jar for %s\n", domainKey)
+		// fmt.Printf("new flat jar for %s\n", domainKey)
 		cookie = &flat.cookies[0]
 	} else {
 		flat.lock.Lock()
@@ -474,7 +513,7 @@ func (jar *flatJar) get(domain, path, name string) *Cookie {
 	// reuse expired cookie
 	if expiredIdx != -1 {
 		jar.cookies[expiredIdx].Name = "" // clearn name to indicate "new"
-		fmt.Printf("get(%s:%s:%s) expired %d\n", domain,path,name, expiredIdx)
+		// fmt.Printf("get(%s:%s:%s) expired %d\n", domain,path,name, expiredIdx)
 		return &jar.cookies[expiredIdx]
 	}
 
@@ -482,13 +521,13 @@ func (jar *flatJar) get(domain, path, name string) *Cookie {
 	if len(jar.cookies) >= MaxCookiesPerDomain {
 		// reuse least used
 		jar.cookies[oldestIdx].Name = "" // clearn name to indicate "new"
-		fmt.Printf("get(%s:%s:%s) oldest %d\n", domain,path,name, oldestIdx)
+		// fmt.Printf("get(%s:%s:%s) oldest %d\n", domain,path,name, oldestIdx)
 		return &jar.cookies[oldestIdx]
 	}
 
 	// a genuine new cookie
 	jar.cookies = append(jar.cookies, Cookie{})
-	fmt.Printf("get(%s:%s:%s) new %d/%d\n", domain,path,name, len(jar.cookies), cap(jar.cookies))
+	// fmt.Printf("get(%s:%s:%s) new %d/%d\n", domain,path,name, len(jar.cookies), cap(jar.cookies))
 	return &jar.cookies[len(jar.cookies)-1]
 }
 
@@ -508,41 +547,6 @@ func (jar *flatJar) delete(domain, path, name string) bool {
 	return false
 }
 
-/*************************
-// delete cookie at indices in jar.cookies by replacing with last (undeleted) cookies
-func (jar *Jar) deleteIdx(indices []int) {
-	for _, i := range indices {
-		if i >= len(jar.cookies) {
-			break
-		}
-
-		// find last non-deleted cookie
-		e := len(jar.cookies) - 1
-		for ; e > i; e-- {
-			okay := true
-			for _, j := range indices {
-				if e == j {
-					okay = false
-					break
-				}
-			}
-			if okay {
-				break
-			}
-		}
-		if e == i {
-			// all from i to end expired
-			jar.cookies = jar.cookies[:i]
-			break
-		} else {
-			// copy last non-expired (e) to pos index and strip
-			jar.cookies[i] = jar.cookies[e]
-			jar.cookies = jar.cookies[:e]
-		}
-	}
-}
-******************************/
-
 // a subset of cookies sortable by
 // LastAccess (earlier goes front).
 type cookieSubset []*Cookie
@@ -550,64 +554,6 @@ type cookieSubset []*Cookie
 func (ss cookieSubset) Len() int           { return len(ss) }
 func (ss cookieSubset) Less(i, j int) bool { return ss[i].LastAccess.Before(ss[j].LastAccess) }
 func (ss cookieSubset) Swap(i, j int)      { ss[i], ss[j] = ss[j], ss[i] }
-
-// delete all expired cookies from the jar
-func (jar *Jar) removeExpiredCookies() {
-	/***********
-	expiredIdx := make([]int, 0)
-	for i := 0; i < len(jar.cookies); i++ {
-		if jar.cookies[i].isExpired() {
-			expiredIdx = append(expiredIdx, i)
-		}
-	}
-	jar.deleteIdx(expiredIdx)
-	*************/
-}
-
-// remove cookies if a domain has set more than the allowed number of cookies
-// or if the total size exceeds our limit.
-func (jar *Jar) removeExcessCookies() {
-	/***********************
-	// pass 1: excessive use of one domain
-	cookiesForDomain := make(map[string][]int)
-	for i := range jar.cookies {
-		domain := jar.cookies[i].Domain
-		if list, ok := cookiesForDomain[domain]; !ok {
-			cookiesForDomain[domain] = []int{i}
-		} else {
-			cookiesForDomain[domain] = append(list, i)
-		}
-	}
-	maxPerDomain := jar.MaxCookiesPerDomain
-	if maxPerDomain == 0 {
-		maxPerDomain = MaxCookiesPerDomain
-	}
-	for _, ci := range cookiesForDomain {
-		if len(ci) <= maxPerDomain {
-			continue
-		}
-		// sort by LastAccess and remove seldomly used excess cookies
-		ss := cookieSubset{jar, ci}
-		sort.Sort(ss)
-		jar.deleteIdx(ss.idx[:len(ci)-maxPerDomain])
-	}
-
-	// pass 2: limit total count
-	maxTotal := jar.MaxCookiesTotal
-	if maxTotal == 0 {
-		maxTotal = MaxCookiesTotal
-	}
-	if len(jar.cookies) > maxTotal {
-		allIdx := make([]int, len(jar.cookies))
-		for i := range jar.cookies {
-			allIdx[i] = i
-		}
-		ss := cookieSubset{jar, allIdx}
-		sort.Sort(ss)
-		jar.deleteIdx(ss.idx[:len(jar.cookies)-maxTotal])
-	}
-	 *****************************/
-}
 
 // -------------------------------------------------------------------------
 // Retrieve Cookies
@@ -645,6 +591,9 @@ func (jar *Jar) Cookies(u *url.URL) []*http.Cookie {
 	// retrieve cookies and sort according to RFC 6265 section 5.2 point 2
 	selection := make([]*Cookie, 0)
 	for i := range flat.cookies {
+		if flat.cookies[i].empty() {
+			continue
+		}
 		if flat.cookies[i].shouldSend(host, path, secure) {
 			selection = append(selection, &flat.cookies[i])
 		}

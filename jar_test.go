@@ -5,7 +5,7 @@
 package cookiejar
 
 import (
-	"fmt"
+	// "fmt"
 	"net/http"
 	"net/url"
 	// "reflect"
@@ -624,9 +624,9 @@ var singleJarTests = []jarTest{
 func TestSingleJar(t *testing.T) {
 	for _, tt := range singleJarTests {
 		jar := &Jar{}
-		fmt.Printf("\n%s\n", tt.description)
+		// fmt.Printf("\n%s\n", tt.description)
 		runJarTest(t, jar, tt)
-		fmt.Printf("Jar now: %s\n\n", jar.content())
+		// fmt.Printf("Jar now: %s\n\n", jar.content())
 	}
 }
 
@@ -780,7 +780,7 @@ func index(cookies []*http.Cookie, cs string) int {
 	name = cs
 	if i := strings.Index(cs, "="); i != -1 {
 		name, value = cs[:i], cs[i+1:]
-		fmt.Printf("name=%s value=%s\n", name, value)
+		// fmt.Printf("name=%s value=%s\n", name, value)
 	}
 
 	for idx, c := range cookies {
@@ -788,10 +788,10 @@ func index(cookies []*http.Cookie, cs string) int {
 			continue
 		}
 		if value != "" && c.Value != value {
-			fmt.Printf("bad value %s\n", c.Value)
+			// fmt.Printf("bad value %s\n", c.Value)
 			continue
 		}
-		fmt.Printf("found\n")
+		// fmt.Printf("found\n")
 		return idx
 	}
 	return -1
