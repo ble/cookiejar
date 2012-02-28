@@ -83,8 +83,9 @@ func BenchmarkInsertHalfJar(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
+		u, _ := url.Parse(fmt.Sprintf("http://www.%dexample.org/some/path", i))
 		b.StartTimer()
-		jar.SetCookies(exampleUrl, exampleCookies)
+		jar.SetCookies(u, exampleCookies)
 	}
 }
 
@@ -95,8 +96,9 @@ func BenchmarkInsertFullJar(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
+		u, _ := url.Parse(fmt.Sprintf("http://www.%dexample.org/some/path", i))
 		b.StartTimer()
-		jar.SetCookies(exampleUrl, exampleCookies)
+		jar.SetCookies(u, exampleCookies)
 	}
 }
 

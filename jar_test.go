@@ -21,11 +21,13 @@ func (a updateAction) String() string {
 	case invalidCookie:
 		return "invalidCookie"
 	case deleteCookie:
-		return "deleteUnstored"
+		return "deleteCookie"
 	case createCookie:
 		return "createCookie"
 	case updateCookie:
 		return "updateCookie"
+	case noSuchCookie:
+		return "noSuchCookie"
 	}
 	return "???"
 }
@@ -321,7 +323,7 @@ func TestUpdate(t *testing.T) {
 
 		defaultPath := defaultPath(u)
 
-		action := jar.update(tt.uhost, defaultPath, now, cookie)
+		action := jar.update("", nil, tt.uhost, defaultPath, now, cookie)
 
 		if action != tt.eaction {
 			t.Errorf("Test cookie named %s got action %s want %s",
@@ -334,7 +336,7 @@ func TestUpdate(t *testing.T) {
 				}
 			case deleteCookie:
 				if present(jar, tt, now, t) {
-					t.Errorf("Test cookie named %s found after store", tt.cname)
+					t.Errorf("Test cookie named %s found after delete", tt.cname)
 				}
 			}
 		}
@@ -622,8 +624,20 @@ var singleJarTests = []jarTest{
 func TestSingleJar(t *testing.T) {
 	for _, tt := range singleJarTests {
 		jar := &Jar{}
+		fmt.Printf("\n%s\n", tt.description)
 		runJarTest(t, jar, tt)
+		fmt.Printf("Jar now: %s\n\n", jar.content())
 	}
+}
+
+func (jar *Jar) content() string {
+	s := ""
+	for _, flat := range jar.storage {
+		for _, c := range flat.cookies {
+			s += c.Name + "=" + c.Value + "   "
+		}
+	}
+	return s
 }
 
 // The following must be run in one batch against one jar each
@@ -841,6 +855,9 @@ func (jar *Jar) allNames() string {
 	names := make([]string, 0)
 	for _, flat := range jar.storage {
 		for _, c := range flat.cookies {
+			if c.empty() || c.isExpired() {
+				continue
+			}
 			names = append(names, c.Name)
 		}
 	}

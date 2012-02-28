@@ -7,7 +7,7 @@ package cookiejar
 import (
 	"strings"
 	"time"
-	// "fmt"
+	"fmt"
 )
 
 // Cookie is the internal representation of a cookie in our jar.
@@ -22,7 +22,18 @@ type Cookie struct {
 	LastAccess   time.Time // for internal bookkeeping: keep recently used cookies
 }
 
-var longAgo = time.Date(1, time.March, 2, 4, 5, 6, 0, time.UTC)
+// check if cookie Name is set
+func (c *Cookie) empty() bool {
+	return len(c.Name)==0 
+}
+
+var (
+	// magic value for a clearly expired cookie
+	longAgo = time.Date(1, time.March, 2, 4, 5, 6, 0, time.UTC)
+
+	// a point somewhere so far in the future taht we will never reach it
+	farFuture = time.Date(9999, time.December, 12, 23, 59, 59, 0, time.UTC)
+)
 
 // Attach method of sort.Interface to []*Cookie
 type cookieList []*Cookie
@@ -42,6 +53,9 @@ func (cl cookieList) Swap(i, j int) {
 // shouldSend determines whether to send cookie via a secure request
 // to host with path. 
 func (c *Cookie) shouldSend(host, path string, secure bool) bool {
+	fmt.Printf("shouldSend(%s=%s  to  %s %s %t): %t %t %t %t\n",
+		c.Name, c.Value, host, path, secure,
+		c.domainMatch(host), c.pathMatch(path), !c.isExpired(),	secureEnough(c.Secure, secure))
 	return c.domainMatch(host) &&
 		c.pathMatch(path) &&
 		!c.isExpired() &&

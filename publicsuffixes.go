@@ -39,6 +39,9 @@ type psStorage [][]string
 //       match the labels of the prevailing rule (joined by dots).
 //    7. The registered or registrable domain is the public suffix plus one 
 //       additional label.
+//
+// TODO: remove covered.
+// TODO: do not use domainRev
 func (ps psStorage) info(domain string) (covered, allow bool, etdl string) {
 	domainRev := splitAndReverse(strings.ToLower(domain))
 	rule := ps.rule(domain)
@@ -67,6 +70,8 @@ func (ps psStorage) info(domain string) (covered, allow bool, etdl string) {
 			}
 			etdl = domainRev[i] + etdl
 		}
+	} else {
+		etdl = domain
 	}
 
 	return
