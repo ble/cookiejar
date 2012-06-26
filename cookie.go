@@ -15,9 +15,8 @@ type Cookie struct {
 	Name, Value  string    // name and value of cookie
 	Domain, Path string    // domain (no leading .) and path
 	Secure       bool      // corresponding fields in http.Cookie
-	HttpOnly     bool      // corresponding filed in http.Cookie (unused)
 	Expires      time.Time // zero value indicates Session cookie
-	HostOnly     bool      // flag for Host vs Domain cookie
+	HostOnly     bool      // flag for Host vs. Domain cookie
 	Created      time.Time // used in sorting returned cookies
 	LastAccess   time.Time // for internal bookkeeping: keep recently used cookies
 }
@@ -37,21 +36,6 @@ var (
 	// a point somewhere so far in the future taht we will never reach it
 	farFuture = time.Date(9999, time.December, 12, 23, 59, 59, 0, time.UTC)
 )
-
-// Attach method of sort.Interface to []*Cookie
-type cookieList []*Cookie
-
-func (cl cookieList) Len() int { return len(cl) }
-func (cl cookieList) Less(i, j int) bool {
-	in, jn := len(cl[i].Path), len(cl[j].Path)
-	if in == jn {
-		return cl[i].Created.Before(cl[j].Created)
-	}
-	return in > jn
-}
-func (cl cookieList) Swap(i, j int) {
-	cl[i], cl[j] = cl[j], cl[i]
-}
 
 // shouldSend determines whether to send cookie via a secure request
 // to host with path. 
@@ -120,8 +104,29 @@ func (c *Cookie) pathMatch(requestPath string) bool {
 	return false
 }
 
-// isExpired checks if cookie c is expired. The zero value of time.Time for
-// c.Expires indicates a session cookie (which so not expire until exit).
+// isExpired checks if cookie c is expired.  The zero value of time.Time for
+// c.Expires indicates a session cookie i.e. not expired.
 func (c *Cookie) isExpired() bool {
 	return !c.Expires.IsZero() && c.Expires.Before(time.Now())
 }
+
+// ------------------------------------------------------------------------
+// Sorting of cookies in two variants
+
+// sendList is the list of cookies to be sent in a HTTP request.
+type sendList []*Cookie
+
+func (l sendList) Len() int { return len(l) }
+func (l sendList) Less(i, j int) bool {
+	// RFC 6265 says (section 5.4 point 2) we should sort our cookies
+	// like:
+	//   o  longer paths go firts
+	//   o  for same length paths: earlier creation time goes first
+	in, jn := len(l[i].Path), len(l[j].Path)
+	if in == jn {
+		return l[i].Created.Before(l[j].Created)
+	}
+	return in > jn
+}
+func (l sendList) Swap(i, j int) { l[i], l[j] = l[j], l[i] }
+
