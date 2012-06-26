@@ -14,9 +14,10 @@ import (
 type Cookie struct {
 	Name, Value  string    // name and value of cookie
 	Domain, Path string    // domain (no leading .) and path
-	Secure       bool      // corresponding fields in http.Cookie
 	Expires      time.Time // zero value indicates Session cookie
+	Secure       bool      // corresponding fields in http.Cookie
 	HostOnly     bool      // flag for Host vs. Domain cookie
+	HttpOnly     bool      // corresponding field in http.Cookie
 	Created      time.Time // used in sorting returned cookies
 	LastAccess   time.Time // for internal bookkeeping: keep recently used cookies
 }

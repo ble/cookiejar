@@ -515,7 +515,7 @@ func (jar *Jar) Cookies(u *url.URL) []*http.Cookie {
 			selection = append(selection, &flat.cookies[i])
 		}
 	}
-	sort.Sort(cookieList(selection))
+	sort.Sort(sendList(selection))
 
 	// fill into slice of http.Cookies
 	now := time.Now()

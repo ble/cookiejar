@@ -77,6 +77,70 @@ func (ps psStorage) info(domain string) (covered, allow bool, etdl string) {
 	return
 }
 
+// -------------------------------------------------------------------------
+// Rule
+
+
+/*
+var rules []struct{tld string; sr []struct{fld []string}} {
+	{"com", {"is-an-idiot","is-a-rebulican"}},
+	{"jp", {"fukui", "fukui.*", "fukui.!city"}},
+}
+
+ domain = abc.xyz.com
+ --> tld = com
+ rest = abc.xyz (zb. abc.fukui oder city.fukui oder qwe.dfg.fukui
+ rev fukui.abc
+
+	3 rule types:
+ fixed    jp.fukui
+ wildcard jp.fukui.*
+ exept    jp.fukui.!city
+
+domain-real  abc.xyz.fukui.jp
+domain-reved jp.fukui.xyz.abc
+
+domain-real  abc.city.fukui.jp
+domain-reved jp.fukui.city.abc
+
+domain-real  fukui.jp
+domain-reved jp.fukui
+must not match rule jp.fukuimashi
+
+domain match either:
+  - domain == rule   or
+  - "." + rule is suffix of domain
+works even for wildcard rule if domain does not start with dot.
+
+type Rule {
+ typ ruleType
+ fld string // the abc in xyz.abc.org
+ rest string
+}
+
+type Storage {
+ tld string
+ exceptions []string  // any exeptions collected
+ simples, complex []string  ony one is non nil
+ }
+
+var rules = []struct{tld string, exeptions []Rule, rules []Rule}}
+
+
+lookup:
+ - binary search for tld (there is exactly one or none, but not multiple)
+  - not found --> done
+  - linear search in exeptions
+  - found --> done
+ - binary search on fld (might have several)
+  - not found --> done
+  - check rest
+
+
+*/
+
+
+// 
 type Rule []string
 
 type cacheEntry struct {
