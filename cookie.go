@@ -40,13 +40,13 @@ var (
 
 // shouldSend determines whether to send cookie via a secure request
 // to host with path. 
-func (c *Cookie) shouldSend(host, path string, secure bool) bool {
+func (c *Cookie) shouldSend(host, path string, secure bool, now time.Time) bool {
 	// fmt.Printf("shouldSend(%s=%s  to  %s %s %t): %t %t %t %t\n",
 	//	c.Name, c.Value, host, path, secure,
 	//	c.domainMatch(host), c.pathMatch(path), !c.isExpired(),	secureEnough(c.Secure, secure))
 	return c.domainMatch(host) &&
 		c.pathMatch(path) &&
-		!c.isExpired() &&
+		!c.IsExpired(now) &&
 		secureEnough(c.Secure, secure)
 }
 
@@ -107,12 +107,12 @@ func (c *Cookie) pathMatch(requestPath string) bool {
 
 // isExpired checks if cookie c is expired.  The zero value of time.Time for
 // c.Expires indicates a session cookie i.e. not expired.
-func (c *Cookie) isExpired() bool {
-	return !c.Expires.IsZero() && c.Expires.Before(time.Now())
+func (c *Cookie) IsExpired(now time.Time) bool {
+	return !c.Expires.IsZero() && c.Expires.Before(now)
 }
 
 // ------------------------------------------------------------------------
-// Sorting of cookies in two variants
+// Sorting of cookies 
 
 // sendList is the list of cookies to be sent in a HTTP request.
 type sendList []*Cookie
@@ -131,3 +131,28 @@ func (l sendList) Less(i, j int) bool {
 }
 func (l sendList) Swap(i, j int) { l[i], l[j] = l[j], l[i] }
 
+// -------------------------------------------------------------------------
+// Finding the n least used cookies
+
+type leastUsed struct {
+	n       int
+	cookies []*Cookie
+}
+
+func (lu *leastUsed) insert(cookie *Cookie) {
+	if len(lu.cookies) < lu.n {
+		lu.cookies = append(lu.cookies, cookie)
+		return
+	}
+	if !cookie.LastAccess.Before(lu.cookies[lu.n-1].LastAccess) {
+		return
+	}
+
+	i := lu.n - 2
+	for i >= 0 && cookie.LastAccess.Before(lu.cookies[i].LastAccess) {
+		i--
+	}
+	i++
+	copy(lu.cookies[i+1:], lu.cookies[i:])
+	lu.cookies[i] = cookie
+}

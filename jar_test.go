@@ -148,7 +148,8 @@ func TestDomainAndType(t *testing.T) {
 
 func TestStrictnessWithIP(t *testing.T) {
 	// No (host cookies) for IP addresses in strict mode
-	jar := &Jar{MaxCookiesPerDomain: 10, MaxCookiesTotal: 10, MaxBytesPerCookie: 10}
+	jar := &Jar{MaxCookiesPerDomain: 10, MaxCookiesTotal: 10, MaxBytesPerCookie: 10,
+		Storage: NewFlatStorage(5)}
 	d, h, _ := jar.domainAndType("127.0.0.1", "127.0.0.1")
 	if d != "" {
 		t.Errorf("Got %s", d)
@@ -156,7 +157,8 @@ func TestStrictnessWithIP(t *testing.T) {
 
 	// Allow host cookies for IP addresses like IE, FF and Chrome
 	// if non-strict jar.
-	jar = &Jar{MaxCookiesPerDomain: 10, MaxCookiesTotal: 10, MaxBytesPerCookie: 10, LaxMode: true}
+	jar = &Jar{MaxCookiesPerDomain: 10, MaxCookiesTotal: 10, MaxBytesPerCookie: 10,
+		LaxMode: true, Storage: NewFlatStorage(5)}
 	d, h, _ = jar.domainAndType("127.0.0.1", "127.0.0.1")
 	if d != "127.0.0.1" || h != true {
 		t.Errorf("Got %s and %t", d, h)
@@ -267,39 +269,38 @@ var updateTests = []updateTest{
 
 func present(jar *Jar, tt updateTest, now time.Time, t *testing.T) bool {
 	// blunt search over everything
-	for _, flat := range jar.storage {
-		for _, c := range flat.cookies {
-			if c.Name != tt.cname || c.Expires == longAgo {
-				continue
-			}
-
-			if c.Value != tt.cvalue {
-				t.Errorf("Cookie %s got value %s want %s", tt.cname, c.Value, tt.cvalue)
-			}
-			if c.Domain != tt.edomain {
-				t.Errorf("Cookie %s got domain %s want %s", tt.cname, c.Domain, tt.edomain)
-			}
-			if c.HostOnly != tt.ehostonly {
-				t.Errorf("Cookie %s got hostonly %t want %t", tt.cname, c.HostOnly, tt.ehostonly)
-			}
-			if c.Path != tt.epath {
-				t.Errorf("Cookie %s got path %s want %s", tt.cname, c.Path, tt.epath)
-			}
-			if tt.eexp == -999 && !c.Expires.IsZero() {
-				t.Errorf("Cookie %s got persisten cookie with ttl %d s want session cookie",
-					tt.cname, int(c.Expires.Sub(now).Seconds()))
-			}
-			if tt.eexp != -999 && now.Add(time.Duration(tt.eexp)*time.Second) != c.Expires {
-				t.Errorf("Cookie %s got persistent cookie with ttl %d s want ttl of %d",
-					tt.cname, int(c.Expires.Sub(now).Seconds()), tt.eexp)
-
-			}
-			return true
+	for _, c := range jar.All(now) {
+		if c.Name != tt.cname || c.Expires == longAgo {
+			continue
 		}
+
+		if c.Value != tt.cvalue {
+			t.Errorf("Cookie %s got value %s want %s", tt.cname, c.Value, tt.cvalue)
+		}
+		if c.Domain != tt.edomain {
+			t.Errorf("Cookie %s got domain %s want %s", tt.cname, c.Domain, tt.edomain)
+		}
+		if c.HostOnly != tt.ehostonly {
+			t.Errorf("Cookie %s got hostonly %t want %t", tt.cname, c.HostOnly, tt.ehostonly)
+		}
+		if c.Path != tt.epath {
+			t.Errorf("Cookie %s got path %s want %s", tt.cname, c.Path, tt.epath)
+		}
+		if tt.eexp == -999 && !c.Expires.IsZero() {
+			t.Errorf("Cookie %s got persisten cookie with ttl %d s want session cookie",
+				tt.cname, int(c.Expires.Sub(now).Seconds()))
+		}
+		if tt.eexp != -999 && now.Add(time.Duration(tt.eexp)*time.Second) != c.Expires {
+			t.Errorf("Cookie %s got persistent cookie with ttl %d s want ttl of %d",
+				tt.cname, int(c.Expires.Sub(now).Seconds()), tt.eexp)
+
+		}
+		return true
 	}
 	return false
 }
 
+/************************************************************
 func TestUpdate(t *testing.T) {
 	jar := &Jar{}
 	jar.storage = make(map[string]*flatJar)
@@ -343,6 +344,7 @@ func TestUpdate(t *testing.T) {
 
 	}
 }
+************************************************************/
 
 // -------------------------------------------------------------------------
 // The Big Jar Test
@@ -357,7 +359,7 @@ type expect struct {
 // on what to get back directly afterwards.
 type jarTest struct {
 	requestUrl  string   // the full url of the request to which Set-Cookie headers where recieved
-	description string   // the description of whats tests
+	description string   // the description of what the test is good for
 	setCookies  []string // all the cookies we set as simplified (see below) cookie header lines
 	expected    []expect // what to expect, again as a cookie header line
 }
@@ -623,7 +625,7 @@ var singleJarTests = []jarTest{
 
 func TestSingleJar(t *testing.T) {
 	for _, tt := range singleJarTests {
-		jar := &Jar{}
+		jar := &Jar{Storage: NewFlatStorage(15)}
 		// fmt.Printf("\n%s\n", tt.description)
 		runJarTest(t, jar, tt)
 		// fmt.Printf("Jar now: %s\n\n", jar.content())
@@ -632,10 +634,8 @@ func TestSingleJar(t *testing.T) {
 
 func (jar *Jar) content() string {
 	s := ""
-	for _, flat := range jar.storage {
-		for _, c := range flat.cookies {
-			s += c.Name + "=" + c.Value + "   "
-		}
+	for _, c := range jar.All(time.Now()) {
+		s += c.Name + "=" + c.Value + "   "
 	}
 	return s
 }
@@ -733,7 +733,7 @@ var groupedJarTests = [][]jarTest{
 
 func TestGroupedJar(t *testing.T) {
 	for _, ttt := range groupedJarTests {
-		jar := &Jar{}
+		jar := &Jar{Storage: NewFlatStorage(15)}
 		for _, tt := range ttt {
 			runJarTest(t, jar, tt)
 		}
@@ -853,20 +853,16 @@ func parseCookie(s string) *http.Cookie {
 // e.g. "a;b;x"
 func (jar *Jar) allNames() string {
 	names := make([]string, 0)
-	for _, flat := range jar.storage {
-		for _, c := range flat.cookies {
-			if c.empty() || c.isExpired() {
-				continue
-			}
-			names = append(names, c.Name)
-		}
+	now := time.Now()
+	for _, c := range jar.All(now) {
+		names = append(names, c.Name)
 	}
 	sort.Strings(names)
 	return strings.Join(names, ";")
 }
 
 func TestMaxTotal(t *testing.T) {
-	jar := &Jar{MaxCookiesPerDomain: 100, MaxCookiesTotal: 3} // at most 3 cookies in total in jar
+	jar := &Jar{MaxCookiesPerDomain: 100, MaxCookiesTotal: 3, Storage: NewFlatStorage(5)} // at most 3 cookies in total in jar
 	u, _ := url.Parse("http://www.example.com")
 
 	// fill up to capacity
@@ -910,7 +906,7 @@ func TestMaxTotal(t *testing.T) {
 }
 
 func TestMaxPerDomain(t *testing.T) {
-	jar := &Jar{MaxCookiesPerDomain: 2, MaxCookiesTotal: 100} // at most 2 cookies per domain
+	jar := &Jar{MaxCookiesPerDomain: 2, MaxCookiesTotal: 100, Storage: NewFancyStorage(true)} // at most 2 cookies per domain
 	u1, _ := url.Parse("http://first.domain")
 	u2, _ := url.Parse("http://second.domain")
 	u3, _ := url.Parse("http://third.domain")
@@ -960,7 +956,7 @@ func TestMaxPerDomain(t *testing.T) {
 }
 
 func TestExpiresCleanup(t *testing.T) {
-	jar := Jar{}
+	jar := Jar{Storage: NewFlatStorage(10)}
 	u, _ := url.Parse("http://www.example.com")
 
 	// fill up some cookies 
@@ -985,7 +981,7 @@ func TestExpiresCleanup(t *testing.T) {
 }
 
 func TestHonourLastAccesInCleanup(t *testing.T) {
-	jar := &Jar{MaxCookiesPerDomain: 100, MaxCookiesTotal: 6} // at most 6 cookies  
+	jar := &Jar{MaxCookiesPerDomain: 100, MaxCookiesTotal: 6, Storage: NewFlatStorage(15)} // at most 6 cookies  
 	u, _ := url.Parse("http://www.example.com")
 	uB, _ := url.Parse("http://www.example.com/B/too")
 

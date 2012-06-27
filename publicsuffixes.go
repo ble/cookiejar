@@ -19,7 +19,7 @@ type psStorage [][]string
 
 // retrieve all necessary information from a psStorage ps.
 // covered is true if the domain was covered by a rule; if covered is false
-// all other return values are undevined.
+// all other return values are undefined.
 // allow indicates wheter to allow a cookie on domain or not.
 // etdl is the "effective TLD" for domain, i.e. the domain for which
 // cookies may be set. Its the public suffix plus one more label from
@@ -80,7 +80,6 @@ func (ps psStorage) info(domain string) (covered, allow bool, etdl string) {
 // -------------------------------------------------------------------------
 // Rule
 
-
 /*
 var rules []struct{tld string; sr []struct{fld []string}} {
 	{"com", {"is-an-idiot","is-a-rebulican"}},
@@ -138,7 +137,6 @@ lookup:
 
 
 */
-
 
 // 
 type Rule []string
