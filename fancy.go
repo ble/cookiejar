@@ -40,10 +40,7 @@ func (f *FancyStorage) key(domain string) (key string) {
 		}
 	} else {
 		// www.bbc.uk.co  -->  bbc.uk.co
-		_, _, key = publicsuffixRules.info(domain)
-	}
-	if key == "" {
-		return domain
+		key, _ = effectiveTldPlusOne(domain)
 	}
 	return key
 }

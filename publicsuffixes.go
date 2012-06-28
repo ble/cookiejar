@@ -13,9 +13,95 @@ import (
 	"strings"
 )
 
-// Storage for the public suffix rules.
-// Currently a list of (splitted and reversed) rules
-type psStorage [][]string
+// domainRule (together with a TLD) describes one rule
+type domainRule struct {
+	rule string  // the original rule stripped from tld, "!" and "*"
+	kind uint8 // 0: normal, 1: exception, 2: wildcard
+}
+
+// match decides if the rule r would match domain.
+// As rules are strored without TLD the domain must be provided
+// too with the TLD removed.
+//
+// From http://publicsuffix.org/list/:
+// A domain is said to match a rule if, when the domain and rule are both 
+// split,and one compares the labels from the rule to the labels from the 
+// domain, beginning at the right hand end, one finds that for every pair 
+// either they are identical, or that the label from the rule is "*" (star).
+// The domain may legitimately have labels remaining at the end of this 
+// matching process.
+//
+func (r *domainRule) match(domain string) bool {
+	if !strings.HasSuffix(domain, r.rule) {
+		// fmt.Printf("%v.match(%q) -->  false, no suffix\n", *r, domain)
+		return false  //  rule: xyz.tld  domain: abc.tld
+	}
+	if len(domain) == len(r.rule) {
+		/******
+		if r.kind == 2 {
+			fmt.Printf("%v.match(%q) -->  false, missing *\n", *r, domain)
+			return false  // rule: *.abc.tld  domain: abc.tld
+		}
+		 ********/
+		// fmt.Printf("%v.match(%q) -->  true1\n", *r, domain)
+		return true // rule: abc.tld  domain: abc.tld
+	}
+	// from here on: domain is longer than rule
+	if len(r.rule)==0 || domain[len(domain)-len(r.rule)-1] == '.' {
+		// fmt.Printf("%v.match(%q) -->  true2 \n", *r, domain)
+		return true  // rule: abc.tld  domain: xyz.abc.tld
+	}
+		
+	// fmt.Printf("%v.match(%q) -->  false %c\n", *r, domain, domain[len(domain)-len(r.rule)-1])
+	return false  // rule: abc.tld  domain aaabc.tld
+}
+
+// effectiveTldPlusOne retrieves TLD + 1 respective the publicsuffix + 1.
+// For domains which are too short (tld ony, or publixsuffix only)
+// domain itself is returned and the fact is reported with tooShort==true
+//
+// Algorithm
+//    6. The public suffix is the set of labels from the domain which directly 
+//       match the labels of the prevailing rule (joined by dots).
+//    7. The registered or registrable domain is the public suffix plus one 
+//       additional label.
+func effectiveTldPlusOne(domain string) (etldp1 string, tooShort bool) {
+	rule := findDomainRule(domain)
+	labels := strings.Split(domain, ".")
+	var n int
+	if rule == nil {
+		// no rule from our list matches: default rule is "*"
+		n = 2
+	} else {
+		if rule.rule=="" {
+			n = 2
+		} else {
+			// +1 to get from . to parts, +1 as tld itself is 
+			// stripped from r.rule and +1 as we want etld+1
+			n = strings.Count(rule.rule, ".") + 3 
+		}
+		if rule.kind == 1 {
+			n-- // expection rule
+		} else if rule.kind == 2 {
+			n++ // wildcard rule
+		}
+
+	}
+
+	if n>len(labels) {
+		n = len(labels) // cannot return more than we have
+		tooShort = true
+	}
+	etldp1 = strings.Join(labels[len(labels)-n:] , ".")
+	return etldp1, tooShort
+}
+
+// check whether domain is "specific" enough to allow domain cookies
+// to be set for this domain.
+func allowCookiesOn(domain string) bool {
+	_, tooShort := effectiveTldPlusOne(domain)  // TODO: own algorithm to save unused string gymnastics
+	return ! tooShort
+}
 
 // retrieve all necessary information from a psStorage ps.
 // covered is true if the domain was covered by a rule; if covered is false
@@ -40,125 +126,26 @@ type psStorage [][]string
 //    7. The registered or registrable domain is the public suffix plus one 
 //       additional label.
 //
-// TODO: remove covered.
-// TODO: do not use domainRev
-func (ps psStorage) info(domain string) (covered, allow bool, etdl string) {
-	domainRev := splitAndReverse(strings.ToLower(domain))
-	rule := ps.rule(domain)
-	if len(rule) == 0 {
-		// no rule
-		etdl = domainRev[0]
-		if len(domainRev) > 1 {
-			etdl = domainRev[1] + "." + etdl
-		}
-		return false, false, etdl
-	}
-	covered = true
 
-	// Disallow cookies for domain if domain is a publicsuffix. 
-	// Instead of constructing the publicsuffix: domain==publicsuffix
-	// if len(rule) == len(domainRev): All elements of rule match
-	// all of domain -> domain==publicsuffix described by rule.
-	// The rule cannot be longer (it would not match), so:
-	allow = len(rule) < len(domainRev)
-
-	if allow {
-		// construct effective TLD = "publicsuffix + 1" 
-		for i := 0; i <= len(rule); i++ {
-			if i > 0 {
-				etdl = "." + etdl
-			}
-			etdl = domainRev[i] + etdl
-		}
-	} else {
-		etdl = domain
-	}
-
-	return
-}
-
-// -------------------------------------------------------------------------
-// Rule
-
-/*
-var rules []struct{tld string; sr []struct{fld []string}} {
-	{"com", {"is-an-idiot","is-a-rebulican"}},
-	{"jp", {"fukui", "fukui.*", "fukui.!city"}},
-}
-
- domain = abc.xyz.com
- --> tld = com
- rest = abc.xyz (zb. abc.fukui oder city.fukui oder qwe.dfg.fukui
- rev fukui.abc
-
-	3 rule types:
- fixed    jp.fukui
- wildcard jp.fukui.*
- exept    jp.fukui.!city
-
-domain-real  abc.xyz.fukui.jp
-domain-reved jp.fukui.xyz.abc
-
-domain-real  abc.city.fukui.jp
-domain-reved jp.fukui.city.abc
-
-domain-real  fukui.jp
-domain-reved jp.fukui
-must not match rule jp.fukuimashi
-
-domain match either:
-  - domain == rule   or
-  - "." + rule is suffix of domain
-works even for wildcard rule if domain does not start with dot.
-
-type Rule {
- typ ruleType
- fld string // the abc in xyz.abc.org
- rest string
-}
-
-type Storage {
- tld string
- exceptions []string  // any exeptions collected
- simples, complex []string  ony one is non nil
- }
-
-var rules = []struct{tld string, exeptions []Rule, rules []Rule}}
-
-
-lookup:
- - binary search for tld (there is exactly one or none, but not multiple)
-  - not found --> done
-  - linear search in exeptions
-  - found --> done
- - binary search on fld (might have several)
-  - not found --> done
-  - check rest
-
-
-*/
-
-// 
-type Rule []string
 
 type cacheEntry struct {
 	domain string
-	rule   Rule
+	rule   *domainRule
 }
 type ruleCache struct {
 	cache []cacheEntry
 	idx   int
 }
 
-func (rc ruleCache) Lookup(domain string) *Rule {
+func (rc ruleCache) Lookup(domain string) *domainRule {
 	for _, e := range rc.cache {
 		if e.domain == domain {
-			return &e.rule
+			return e.rule
 		}
 	}
 	return nil
 }
-func (rc *ruleCache) Store(domain string, rule Rule) {
+func (rc *ruleCache) Store(domain string, rule *domainRule) {
 	if rc.idx == len(rc.cache) {
 		rc.cache = append(rc.cache, cacheEntry{domain, rule})
 	} else {
@@ -172,7 +159,8 @@ func (rc *ruleCache) Store(domain string, rule Rule) {
 
 var theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
 
-// find rule in ps best matching domain (given in spliied and reversed form.
+// findDomainRule looks up the matching rule in our domainRules list.
+//
 // Algorithm from http://publicsuffix.org/list/:
 //    1. Match domain against all rules and take note of the matching ones.
 //    2. If no rules match, the prevailing rule is "*".
@@ -187,141 +175,34 @@ var theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
 //    7. The registered or registrable domain is the public suffix plus one 
 //       additional label.
 //
-// Point 2 is cleary wrong: For a domain like "really.not.listed" the default
-// rule "*" would be the best matching rule which results in a public suffix
-// of "listed" for "really.not.listed" which is not a public suffix.
-//
-// call with split and reversed domain and get the rule back in same format
-func (ps psStorage) rule(domain string) []string {
-
-	if rule := theRuleCache.Lookup(domain); rule != nil {
-		return []string(*rule)
+// We do not do step 5, this is the callers responsibility.
+func findDomainRule(domain string) *domainRule {
+	// extract TLD from domain and look up list of rules for 
+	// this TLD if present
+	var tld string
+	var strippedDomain string
+	if i:=strings.LastIndex(domain, "."); i != -1 {
+		tld = domain[i+1:]
+		strippedDomain = domain[:i]
+	} else {
+		tld = domain
+		strippedDomain = ""
 	}
-	domainRev := splitAndReverse(domain)
-
-	rule := []string{} // (2) but adopted
-
-	var exceptionRule []string
-	numLabels := 0
-
-	startIdx, endIdx := ps.tldIndex(domainRev[0])
-	if startIdx == -1 {
-		return rule
+	rules, ok := domainRules[tld]
+	if !ok {
+		// fmt.Printf("findDomainRule(%q) --> no such tld\n", domain)
+		return nil
 	}
-	for i := startIdx; i <= endIdx; i++ { // (1) adopted
-		r := publicsuffixRules[i]
-		if !ps.ruleMatch(r, domainRev) {
-			continue
-		}
-		if r[len(r)-1][0] == '!' { // (3) found exception rule
-			exceptionRule = r[:len(r)-1] // (5) remove leftmost (here last) label
-		} else if len(r) > numLabels {
-			rule = r // (4)
-			numLabels = len(rule)
+
+	// rules are sorted in presidence, so first match is the match
+	for i := range rules{
+		// fmt.Printf("    %d  %s  test  %v\n", i, strippedDomain, rules[i])
+		if rules[i].match(strippedDomain) {
+			// fmt.Printf("findDomainRule(%q) --> rule %v\n", domain, rules[i])
+			return &rules[i]
 		}
 	}
 
-	if exceptionRule != nil {
-		// fmt.Printf("Rule for %v (exception) %v\n", domainRev, exceptionRule)
-		theRuleCache.Store(domain, exceptionRule)
-		return exceptionRule
-	}
-
-	// fmt.Printf("Rule for %v (longest) %v\n", domainRev, rule)
-	theRuleCache.Store(domain, rule)
-	return rule
-}
-
-// Look up range of rules for TLD tld. 
-// all rules for tld will be between startIdx and endIdx.
-func (ps psStorage) tldIndex(tld string) (startIdx, endIdx int) {
-	// binary search to find any rule for tld
-	startIdx, endIdx = 0, len(ps)-1
-	if ps[startIdx][0] > tld || ps[endIdx][0] < tld {
-		return 0, 0
-	}
-	m := endIdx / 2
-
-	for {
-		if ps[m][0] < tld {
-			startIdx = m
-		} else if ps[m][0] > tld {
-			endIdx = m
-		} else {
-			break
-		}
-		if endIdx-startIdx < 4 {
-			break
-		}
-		m = (startIdx + endIdx) / 2
-		// fmt.Printf("  %d  %d  %d\n", startIdx, m, endIdx)
-	}
-	// m now lies somewhere in the range of the rules for tld.
-
-	// find better startindex
-	x := m
-	mm := (startIdx + x) / 2
-	for {
-		if x-startIdx < 8 {
-			break
-		}
-		if ps[mm][0] < tld {
-			startIdx = mm
-		} else {
-			x = mm
-		}
-		mm = (startIdx + x) / 2
-	}
-
-	// find better endindex
-	x = m
-	mm = (endIdx + x) / 2
-	for {
-		if endIdx-x < 8 {
-			break
-		}
-		if ps[mm][0] > tld {
-			endIdx = mm
-		} else {
-			x = mm
-		}
-		mm = (endIdx + x) / 2
-	}
-
-	return
-}
-
-// From http://publicsuffix.org/list/:
-// A domain is said to match a rule if, when the domain and rule are both 
-// split,and one compares the labels from the rule to the labels from the 
-// domain, beginning at the right hand end, one finds that for every pair 
-// either they are identical, or that the label from the rule is "*" (star).
-// The domain may legitimately have labels remaining at the end of this 
-// matching process.
-func (ps psStorage) ruleMatch(rule, domain []string) bool {
-	lastInDomain := len(domain) - 1
-	for i, label := range rule {
-		if i > lastInDomain {
-			// didn't match whole rule
-			return false
-		}
-		if label[0] == '!' {
-			label = label[1:] // strip exception identification for match
-		}
-		if label != domain[i] && label != "*" {
-			return false
-		}
-	}
-	return true
-}
-
-// "www.example.com"  -->  {"com", "example", "www"}
-func splitAndReverse(domain string) []string {
-	forward := strings.Split(domain, ".")
-	n := len(forward)
-	backward := make([]string, n)
-	for i := 0; i < n; i++ {
-		backward[i] = forward[n-1-i]
-	}
-	return backward
+	// fmt.Printf("findDomainRule(%q) --> no matching rule\n", domain)
+	return nil
 }

@@ -5,101 +5,86 @@
 package cookiejar
 
 import (
-	"fmt"
-	"math/rand"
-	"reflect"
+	// "fmt"
+	// "math/rand"
+	// "reflect"
 	"testing"
-	// "strings"
+	"strings"
 )
 
-var ruleMatchTests = []struct {
-	rule, domain string
+var domainRuleMatchTests = []struct {
+	rule domainRule
+	domain string
 	match        bool
 }{
-	{"com", "foo.com", true},
-	{"foo.com", "foo.com", true},
-	{"bar.foo.com", "foo.com", false},
-	{"com", "bar.foo.com", true},
-	{"foo.com", "bar.foo.com", true},
-	{"net", "foo.com", false},
-	{"net", "net.foo.com", false},
-	{"*.net", "abc.net", true},
-	{"xyz.net", "abc.net", false},
-	{"!abc.net", "abc.net", true},
-	{"!foo.abc.net", "abc.net", false},
+	{domainRule{"",0}, "foo.com", true},
+	{domainRule{"foo",0}, "foo.com", true},
+	{domainRule{"bar.foo",0}, "foo.com", false},
+	{domainRule{"",0}, "bar.foo.com", true},
+	{domainRule{"foo",0}, "bar.foo.com", true},
+	{domainRule{"", 2}, "abc.net", true},
+	{domainRule{"xyz",0}, "abc.net", false},
+	{domainRule{"abc",1}, "abc.net", true},
+	{domainRule{"foo.abc",1}, "abc.net", false},
+	{domainRule{"city.kyoto",1}, "www.city.kyoto.jp", true},
+	{domainRule{"kyoto",2}, "www.city.kyoto.jp", true},
+	{domainRule{"kyoto",2}, "kyoto.jp", true},
+	{domainRule{"uk",0}, "uk.com", true},
 }
 
-func TestRuleMatch(t *testing.T) {
-	for _, test := range ruleMatchTests {
-		domainRev := splitAndReverse(test.domain)
-		rule := splitAndReverse(test.rule)
-		if publicsuffixRules.ruleMatch(rule, domainRev) != test.match {
-			t.Errorf("Rule %s, domain %s got want %t", test.rule, test.domain, test.match)
+func TestDomainRuleMatch(t *testing.T) {
+	for i, test := range domainRuleMatchTests {
+		domain := test.domain[:strings.LastIndex(test.domain,".")]
+		m := test.rule.match(domain)
+		if m != test.match {
+			t.Errorf("%d: Rule %v, domain %s got %t want %t", 
+				i, test.rule, test.domain, m, test.match)
 		}
 	}
 }
 
-var ruleTests = []struct{ domain, rule string }{
-	{"foo.com", "com"},
-	{"foo.bar.jm", "*.jm"},
-	{"bar.jm", "*.jm"},
-	{"foo.bar.hokkaido.jp", "*.hokkaido.jp"},
-	{"bar.hokkaido.jp", "*.hokkaido.jp"},
-	{"pref.hokkaido.jp", "hokkaido.jp"},
+var findDomainRuleTests = []struct{
+	domain string
+	rule *domainRule
+} {
+	{"notlisted", nil},
+	{"really.not.listed", nil},
+	{"biz", &domainRule{"",0}},
+	{"domain.biz", &domainRule{"",0}},
+	{"a.b.domain.biz", &domainRule{"",0}},
+	{"com", &domainRule{"",0}},
+	{"example.com", &domainRule{"",0}},
+	{"uk.com", &domainRule{"uk",0}},
+	{"example.uk.com", &domainRule{"uk",0}},
+	{"pref.kyoto.jp", &domainRule{"pref.kyoto",1}},
+	{"www.pref.kyoto.jp", &domainRule{"pref.kyoto",1}},
 }
 
-func TestRule(t *testing.T) {
-	for _, test := range ruleTests {
-		trr := splitAndReverse(test.rule)
-		rule := publicsuffixRules.rule(test.domain)
-
-		if !reflect.DeepEqual(rule, trr) {
-			t.Errorf("Test %s got %v want %v", test.domain, rule, trr)
-		}
+func rulesEqual(r1, r2 *domainRule) bool {
+	if r1== nil && r2==nil {
+		return true
 	}
+	if (r1!=nil && r2==nil) || (r1==nil && r2!=nil) {
+		return false
+	}
+	return r1.rule==r2.rule && r1.kind==r2.kind
 }
 
-var infoTests = []struct {
-	domain         string
-	covered, allow bool
-	etld           string
-}{
-	{"something.strange", false, false, "--"},
-	{"ourintranet", false, false, "--"},
-	{"com", true, false, "--"},
-	{"google.com", true, true, "google.com"},
-	{"www.google.com", true, true, "google.com"},
-	{"uk", true, false, "--"},
-	{"co.uk", true, false, "--"},
-	{"bbc.co.uk", true, true, "bbc.co.uk"},
-	{"foo.www.bbc.co.uk", true, true, "bbc.co.uk"},
-}
-
-func TestInfo(t *testing.T) {
-	for _, test := range infoTests {
-		gc, ga, ge := publicsuffixRules.info(test.domain)
-		if gc != test.covered {
-			t.Errorf("Domain %s expected coverage %t", test.domain, test.covered)
-		} else if gc {
-			if ga != test.allow {
-				t.Errorf("Domain %s expected allow %t", test.domain, test.allow)
-			} else if ga {
-				if ge != test.etld {
-					t.Errorf("Domain %s expected etld %s got %s",
-						test.domain, test.etld, ge)
-				}
-			}
+func TestFindDomainRule(t *testing.T) {
+	for i, test := range findDomainRuleTests {
+		rule := findDomainRule(test.domain)
+		if !rulesEqual(rule, test.rule) {
+			t.Errorf("%d: %q got %v want %v", i, test.domain, rule, test.rule)
 		}
 	}
 }
 
 // test case table derived from http://publicsuffix.org/list/test.txt
-// which justifies the strong format
-var publicsuffixTests = []struct {
+var effectiveTldPlusOneTests = []struct {
 	domain string
-	etld   string // etld=="" iff domain is public suffix or _not_ covered   
+	etldp1 string // etldp1=="" iff domain is public suffix 
 }{
-	/***** We never use empty or mixed cases or leading dots 
+	/***** We never use empty or mixed cases or leading dots *****
 	// NULL input.
 	{"", ""},
 	// Mixed case.
@@ -111,19 +96,22 @@ var publicsuffixTests = []struct {
 	{".example", ""},
 	{".example.com", ""},
 	{".example.example", ""},
-	*********************************************************/
+	**************************************************************/
+
 	// Unlisted TLD.
 	{"example", ""},
 	{"example.example", ""},
 	{"b.example.example", ""},
 	{"a.b.example.example", ""},
+
+	/******* These seem to be no longer listed.... **********
 	// Listed, but non-Internet, TLD.
 	{"local", ""},
-	/*
-	 {"example.local", ""},     // probably wrong testcases here: There is
-	 {"b.example.local", ""},   // there is a lone rule "local" in the list
-	 {"a.b.example.local", ""}, // so "local" is a ps, but example.local ist not.
-	*/
+	{"example.local", ""},     
+	{"b.example.local", ""},   
+	{"a.b.example.local", ""}, 
+	*********************************************************/
+
 	// TLD with only 1 rule.
 	{"biz", ""},
 	{"domain.biz", "domain.biz"},
@@ -178,24 +166,62 @@ var publicsuffixTests = []struct {
 	{"www.test.k12.ak.us", "test.k12.ak.us"},
 }
 
-func TestPublicsuffix(t *testing.T) {
-	for _, test := range publicsuffixTests {
-		covered, allowed, etld := publicsuffixRules.info(test.domain)
-		if test.etld != "" {
-			if !covered || !allowed || etld != test.etld {
-				t.Errorf("Domain %s got %t %t %s want true true %s",
-					test.domain, covered, allowed, etld, test.etld)
+func TestEffectiveTldPlusOne(t *testing.T) {
+	for _, test := range effectiveTldPlusOneTests {
+		etldp1, tooShort := effectiveTldPlusOne(test.domain)
+		
+		if test.etldp1 == "" {
+			if !tooShort {
+				t.Errorf("Domain %s got %q %t\n[rule %v]",
+					test.domain, etldp1, tooShort,
+					findDomainRule(test.domain))
 			}
-		} else {
-			// Too bad test data does not allow to distinguish
-			// "not covered" from "disallowed by matching rule"
-			if covered && allowed {
-				t.Errorf("Domain %s got (covered and allowed)", test.domain)
-			}
+		} else if test.etldp1 != etldp1 {
+			t.Errorf("Domain %s got %q %t want %q\n[rule %v]", 
+				test.domain, etldp1, tooShort, test.etldp1,
+				findDomainRule(test.domain))
 		}
 	}
 }
 
+var infoTests = []struct {
+	domain         string
+	covered, allow bool
+	etld           string
+}{
+	{"something.strange", false, false, "--"},
+	{"ourintranet", false, false, "--"},
+	{"com", true, false, "--"},
+	{"google.com", true, true, "google.com"},
+	{"www.google.com", true, true, "google.com"},
+	{"uk", true, false, "--"},
+	{"co.uk", true, false, "--"},
+	{"bbc.co.uk", true, true, "bbc.co.uk"},
+	{"foo.www.bbc.co.uk", true, true, "bbc.co.uk"},
+}
+/***
+func TestInfo(t *testing.T) {
+	for _, test := range infoTests {
+		gc, ga, ge := publicsuffixRules.info(test.domain)
+		if gc != test.covered {
+			t.Errorf("Domain %s expected coverage %t", test.domain, test.covered)
+		} else if gc {
+			if ga != test.allow {
+				t.Errorf("Domain %s expected allow %t", test.domain, test.allow)
+			} else if ga {
+				if ge != test.etld {
+					t.Errorf("Domain %s expected etld %s got %s",
+						test.domain, test.etld, ge)
+				}
+			}
+		}
+	}
+}
+*****/
+
+
+
+/*******
 func TestRuleCache(t *testing.T) {
 	theRuleCache = ruleCache{make([]cacheEntry, 2), 0}
 	a := theRuleCache.Lookup("a.com")
@@ -239,29 +265,5 @@ func TestRuleCache(t *testing.T) {
 	}
 
 }
+*******/
 
-func BenchmarkRule(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		n := rand.Intn(len(publicsuffixRules))
-		domain := publicsuffixRules[n]
-		last := len(domain) - 1
-		if domain[last][0] == '!' {
-			domain[last] = domain[last][1:]
-		} else if domain[last] == "*" {
-			domain[last] = "anything"
-		}
-		ds := domain[last]
-		for _, d := range domain[:len(domain)-1] {
-			ds = d + "." + ds
-		}
-
-		b.StartTimer()
-
-		r := publicsuffixRules.rule(ds)
-
-		if !reflect.DeepEqual(r, publicsuffixRules[n]) {
-			fmt.Sprintf("Oops: %v %v", r, publicsuffixRules[n])
-		}
-	}
-}

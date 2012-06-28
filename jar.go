@@ -324,8 +324,7 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 		//        Otherwise:
 		//            Ignore the cookie entirely and abort these 
 		//            steps.  [error]
-		covered, allowed, _ := publicsuffixRules.info(domain)
-		if covered && !allowed {
+		if !allowCookiesOn(domain) {
 			// the "domain is a public suffix" case
 			if host == domainAttr {
 				return host, true, nil
