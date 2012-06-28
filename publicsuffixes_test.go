@@ -5,69 +5,66 @@
 package cookiejar
 
 import (
-	// "fmt"
-	// "math/rand"
-	// "reflect"
-	"testing"
 	"strings"
+	"testing"
 )
 
 var domainRuleMatchTests = []struct {
-	rule domainRule
+	rule   domainRule
 	domain string
-	match        bool
+	match  bool
 }{
-	{domainRule{"",0}, "foo.com", true},
-	{domainRule{"foo",0}, "foo.com", true},
-	{domainRule{"bar.foo",0}, "foo.com", false},
-	{domainRule{"",0}, "bar.foo.com", true},
-	{domainRule{"foo",0}, "bar.foo.com", true},
+	{domainRule{"", 0}, "foo.com", true},
+	{domainRule{"foo", 0}, "foo.com", true},
+	{domainRule{"bar.foo", 0}, "foo.com", false},
+	{domainRule{"", 0}, "bar.foo.com", true},
+	{domainRule{"foo", 0}, "bar.foo.com", true},
 	{domainRule{"", 2}, "abc.net", true},
-	{domainRule{"xyz",0}, "abc.net", false},
-	{domainRule{"abc",1}, "abc.net", true},
-	{domainRule{"foo.abc",1}, "abc.net", false},
-	{domainRule{"city.kyoto",1}, "www.city.kyoto.jp", true},
-	{domainRule{"kyoto",2}, "www.city.kyoto.jp", true},
-	{domainRule{"kyoto",2}, "kyoto.jp", true},
-	{domainRule{"uk",0}, "uk.com", true},
+	{domainRule{"xyz", 0}, "abc.net", false},
+	{domainRule{"abc", 1}, "abc.net", true},
+	{domainRule{"foo.abc", 1}, "abc.net", false},
+	{domainRule{"city.kyoto", 1}, "www.city.kyoto.jp", true},
+	{domainRule{"kyoto", 2}, "www.city.kyoto.jp", true},
+	{domainRule{"kyoto", 2}, "kyoto.jp", true},
+	{domainRule{"uk", 0}, "uk.com", true},
 }
 
 func TestDomainRuleMatch(t *testing.T) {
 	for i, test := range domainRuleMatchTests {
-		domain := test.domain[:strings.LastIndex(test.domain,".")]
+		domain := test.domain[:strings.LastIndex(test.domain, ".")]
 		m := test.rule.match(domain)
 		if m != test.match {
-			t.Errorf("%d: Rule %v, domain %s got %t want %t", 
+			t.Errorf("%d: Rule %v, domain %s got %t want %t",
 				i, test.rule, test.domain, m, test.match)
 		}
 	}
 }
 
-var findDomainRuleTests = []struct{
+var findDomainRuleTests = []struct {
 	domain string
-	rule *domainRule
-} {
+	rule   *domainRule
+}{
 	{"notlisted", nil},
 	{"really.not.listed", nil},
-	{"biz", &domainRule{"",0}},
-	{"domain.biz", &domainRule{"",0}},
-	{"a.b.domain.biz", &domainRule{"",0}},
-	{"com", &domainRule{"",0}},
-	{"example.com", &domainRule{"",0}},
-	{"uk.com", &domainRule{"uk",0}},
-	{"example.uk.com", &domainRule{"uk",0}},
-	{"pref.kyoto.jp", &domainRule{"pref.kyoto",1}},
-	{"www.pref.kyoto.jp", &domainRule{"pref.kyoto",1}},
+	{"biz", &domainRule{"", 0}},
+	{"domain.biz", &domainRule{"", 0}},
+	{"a.b.domain.biz", &domainRule{"", 0}},
+	{"com", &domainRule{"", 0}},
+	{"example.com", &domainRule{"", 0}},
+	{"uk.com", &domainRule{"uk", 0}},
+	{"example.uk.com", &domainRule{"uk", 0}},
+	{"pref.kyoto.jp", &domainRule{"pref.kyoto", 1}},
+	{"www.pref.kyoto.jp", &domainRule{"pref.kyoto", 1}},
 }
 
 func rulesEqual(r1, r2 *domainRule) bool {
-	if r1== nil && r2==nil {
+	if r1 == nil && r2 == nil {
 		return true
 	}
-	if (r1!=nil && r2==nil) || (r1==nil && r2!=nil) {
+	if (r1 != nil && r2 == nil) || (r1 == nil && r2 != nil) {
 		return false
 	}
-	return r1.rule==r2.rule && r1.kind==r2.kind
+	return r1.rule == r2.rule && r1.kind == r2.kind
 }
 
 func TestFindDomainRule(t *testing.T) {
@@ -169,7 +166,7 @@ var effectiveTldPlusOneTests = []struct {
 func TestEffectiveTldPlusOne(t *testing.T) {
 	for _, test := range effectiveTldPlusOneTests {
 		etldp1, tooShort := effectiveTldPlusOne(test.domain)
-		
+
 		if test.etldp1 == "" {
 			if !tooShort {
 				t.Errorf("Domain %s got %q %t\n[rule %v]",
@@ -177,93 +174,82 @@ func TestEffectiveTldPlusOne(t *testing.T) {
 					findDomainRule(test.domain))
 			}
 		} else if test.etldp1 != etldp1 {
-			t.Errorf("Domain %s got %q %t want %q\n[rule %v]", 
+			t.Errorf("Domain %s got %q %t want %q\n[rule %v]",
 				test.domain, etldp1, tooShort, test.etldp1,
 				findDomainRule(test.domain))
 		}
 	}
 }
 
-var infoTests = []struct {
-	domain         string
-	covered, allow bool
-	etld           string
+var allowCookiesOnTests = []struct {
+	domain string
+	allow  bool
 }{
-	{"something.strange", false, false, "--"},
-	{"ourintranet", false, false, "--"},
-	{"com", true, false, "--"},
-	{"google.com", true, true, "google.com"},
-	{"www.google.com", true, true, "google.com"},
-	{"uk", true, false, "--"},
-	{"co.uk", true, false, "--"},
-	{"bbc.co.uk", true, true, "bbc.co.uk"},
-	{"foo.www.bbc.co.uk", true, true, "bbc.co.uk"},
+	{"something.strange", false},
+	{"ourintranet", false},
+	{"com", false},
+	{"google.com", true},
+	{"www.google.com", true},
+	{"uk", false},
+	{"co.uk", false},
+	{"bbc.co.uk", true},
+	{"foo.www.bbc.co.uk", true},
+	{"bar.hokkaido.jp", false},
+	{"pref.hokkaido.jp", true},
 }
-/***
-func TestInfo(t *testing.T) {
-	for _, test := range infoTests {
-		gc, ga, ge := publicsuffixRules.info(test.domain)
-		if gc != test.covered {
-			t.Errorf("Domain %s expected coverage %t", test.domain, test.covered)
-		} else if gc {
-			if ga != test.allow {
-				t.Errorf("Domain %s expected allow %t", test.domain, test.allow)
-			} else if ga {
-				if ge != test.etld {
-					t.Errorf("Domain %s expected etld %s got %s",
-						test.domain, test.etld, ge)
-				}
-			}
+
+func TestAllowCookiesOn(t *testing.T) {
+	for i, test := range allowCookiesOnTests {
+		allow := allowCookiesOn(test.domain)
+		if allow != test.allow {
+			t.Errorf("%d: Domain %q expected %t got %t",
+				i, test.domain, test.allow, allow)
 		}
 	}
 }
-*****/
 
-
-
-/*******
 func TestRuleCache(t *testing.T) {
-	theRuleCache = ruleCache{make([]cacheEntry, 2), 0}
-	a := theRuleCache.Lookup("a.com")
-	if a != nil {
-		t.Errorf("Got %v", *a)
-	}
-	theRuleCache.Store("a.com", []string{"a"})
+	theRuleCache = ruleCache{cache: make([]cacheEntry, 2)}
 
-	b := theRuleCache.Lookup("b.com")
-	if b != nil {
-		t.Errorf("Got %v", *b)
+	// Stuff in first a and then b
+	a, fa := theRuleCache.lookup("a")
+	if fa {
+		t.Errorf("Unexpected a got %v", *a)
 	}
-	theRuleCache.Store("b.com", []string{"b"})
+	theRuleCache.store("a", &domainRule{"a", 0})
 
-	a = theRuleCache.Lookup("a.com")
-	if a == nil || []string(*a)[0] != "a" {
-		t.Errorf("Bad a")
+	b, fb := theRuleCache.lookup("b")
+	if fb {
+		t.Errorf("Unexpected b got %v", *b)
 	}
-	b = theRuleCache.Lookup("b.com")
-	if b == nil || []string(*b)[0] != "b" {
-		t.Errorf("Bad b")
-	}
+	theRuleCache.store("b", &domainRule{"b", 0})
 
-	c := theRuleCache.Lookup("c.com")
-	if c != nil {
-		t.Errorf("Got %v", *c)
+	// look up a and b
+	x, fx := theRuleCache.lookup("a")
+	if !fx || x.rule != "a" {
+		t.Errorf("Bad %v", x)
 	}
-	theRuleCache.Store("c.com", []string{"c"})
-
-	a = theRuleCache.Lookup("a.com")
-	if a != nil {
-		t.Errorf("Got %v\n%v", *a, theRuleCache)
-	}
-	b = theRuleCache.Lookup("b.com")
-	if b == nil || []string(*b)[0] != "b" {
-		t.Errorf("Bad b")
-	}
-	c = theRuleCache.Lookup("c.com")
-	if c == nil || []string(*c)[0] != "c" {
-		t.Errorf("Bad c")
+	x, fx = theRuleCache.lookup("b")
+	if !fx || x.rule != "b" {
+		t.Errorf("Bad %v", x)
 	}
 
+	// look up and stuff in c which overwrites a but keeps b
+	c, fc := theRuleCache.lookup("c")
+	if fc {
+		t.Errorf("Unexpected c got %v", *c)
+	}
+	theRuleCache.store("c", &domainRule{"c", 0})
+	x, fx = theRuleCache.lookup("c")
+	if !fx || x.rule != "c" {
+		t.Errorf("Bad %v", x)
+	}
+	a, fa = theRuleCache.lookup("a")
+	if fa {
+		t.Errorf("Unexpected a got %v", *a)
+	}
+	x, fx = theRuleCache.lookup("b")
+	if !fx || x.rule != "b" {
+		t.Errorf("Bad %v", x)
+	}
 }
-*******/
-

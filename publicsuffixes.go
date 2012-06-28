@@ -11,12 +11,13 @@ package cookiejar
 
 import (
 	"strings"
+	"sync"
 )
 
 // domainRule (together with a TLD) describes one rule
 type domainRule struct {
-	rule string  // the original rule stripped from tld, "!" and "*"
-	kind uint8 // 0: normal, 1: exception, 2: wildcard
+	rule string // the original rule stripped from tld, "!" and "*"
+	kind uint8  // 0: normal, 1: exception, 2: wildcard
 }
 
 // match decides if the rule r would match domain.
@@ -34,7 +35,7 @@ type domainRule struct {
 func (r *domainRule) match(domain string) bool {
 	if !strings.HasSuffix(domain, r.rule) {
 		// fmt.Printf("%v.match(%q) -->  false, no suffix\n", *r, domain)
-		return false  //  rule: xyz.tld  domain: abc.tld
+		return false //  rule: xyz.tld  domain: abc.tld
 	}
 	if len(domain) == len(r.rule) {
 		/******
@@ -47,13 +48,13 @@ func (r *domainRule) match(domain string) bool {
 		return true // rule: abc.tld  domain: abc.tld
 	}
 	// from here on: domain is longer than rule
-	if len(r.rule)==0 || domain[len(domain)-len(r.rule)-1] == '.' {
+	if len(r.rule) == 0 || domain[len(domain)-len(r.rule)-1] == '.' {
 		// fmt.Printf("%v.match(%q) -->  true2 \n", *r, domain)
-		return true  // rule: abc.tld  domain: xyz.abc.tld
+		return true // rule: abc.tld  domain: xyz.abc.tld
 	}
-		
+
 	// fmt.Printf("%v.match(%q) -->  false %c\n", *r, domain, domain[len(domain)-len(r.rule)-1])
-	return false  // rule: abc.tld  domain aaabc.tld
+	return false // rule: abc.tld  domain aaabc.tld
 }
 
 // effectiveTldPlusOne retrieves TLD + 1 respective the publicsuffix + 1.
@@ -73,12 +74,12 @@ func effectiveTldPlusOne(domain string) (etldp1 string, tooShort bool) {
 		// no rule from our list matches: default rule is "*"
 		n = 2
 	} else {
-		if rule.rule=="" {
+		if rule.rule == "" {
 			n = 2
 		} else {
 			// +1 to get from . to parts, +1 as tld itself is 
 			// stripped from r.rule and +1 as we want etld+1
-			n = strings.Count(rule.rule, ".") + 3 
+			n = strings.Count(rule.rule, ".") + 3
 		}
 		if rule.kind == 1 {
 			n-- // expection rule
@@ -88,19 +89,19 @@ func effectiveTldPlusOne(domain string) (etldp1 string, tooShort bool) {
 
 	}
 
-	if n>len(labels) {
+	if n > len(labels) {
 		n = len(labels) // cannot return more than we have
 		tooShort = true
 	}
-	etldp1 = strings.Join(labels[len(labels)-n:] , ".")
+	etldp1 = strings.Join(labels[len(labels)-n:], ".")
 	return etldp1, tooShort
 }
 
 // check whether domain is "specific" enough to allow domain cookies
 // to be set for this domain.
 func allowCookiesOn(domain string) bool {
-	_, tooShort := effectiveTldPlusOne(domain)  // TODO: own algorithm to save unused string gymnastics
-	return ! tooShort
+	_, tooShort := effectiveTldPlusOne(domain) // TODO: own algorithm to save unused string gymnastics
+	return !tooShort
 }
 
 // retrieve all necessary information from a psStorage ps.
@@ -127,6 +128,8 @@ func allowCookiesOn(domain string) bool {
 //       additional label.
 //
 
+// -------------------------------------------------------------------------
+// A cache for domainRules to speed up lookup
 
 type cacheEntry struct {
 	domain string
@@ -135,17 +138,27 @@ type cacheEntry struct {
 type ruleCache struct {
 	cache []cacheEntry
 	idx   int
+	lock  sync.RWMutex
 }
 
-func (rc ruleCache) Lookup(domain string) *domainRule {
+// lookup returns the rule, true if found or nil, false if not found
+func (rc ruleCache) lookup(domain string) (*domainRule, bool) {
+	rc.lock.RLock()
+	defer rc.lock.RUnlock()
+
 	for _, e := range rc.cache {
 		if e.domain == domain {
-			return e.rule
+			return e.rule, true
 		}
 	}
-	return nil
+	return nil, false
 }
-func (rc *ruleCache) Store(domain string, rule *domainRule) {
+
+// remember rule (which might be nil) for domain
+func (rc *ruleCache) store(domain string, rule *domainRule) {
+	rc.lock.Lock()
+	defer rc.lock.Unlock()
+
 	if rc.idx == len(rc.cache) {
 		rc.cache = append(rc.cache, cacheEntry{domain, rule})
 	} else {
@@ -157,7 +170,7 @@ func (rc *ruleCache) Store(domain string, rule *domainRule) {
 	}
 }
 
-var theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
+var theRuleCache = ruleCache{cache: make([]cacheEntry, 40), idx: 0}
 
 // findDomainRule looks up the matching rule in our domainRules list.
 //
@@ -176,12 +189,16 @@ var theRuleCache = ruleCache{make([]cacheEntry, 20), 0}
 //       additional label.
 //
 // We do not do step 5, this is the callers responsibility.
-func findDomainRule(domain string) *domainRule {
+func findDomainRule(domain string) (rule *domainRule) {
+	if rule, found := theRuleCache.lookup(domain); found {
+		return rule
+	}
+
 	// extract TLD from domain and look up list of rules for 
 	// this TLD if present
 	var tld string
 	var strippedDomain string
-	if i:=strings.LastIndex(domain, "."); i != -1 {
+	if i := strings.LastIndex(domain, "."); i != -1 {
 		tld = domain[i+1:]
 		strippedDomain = domain[:i]
 	} else {
@@ -190,19 +207,19 @@ func findDomainRule(domain string) *domainRule {
 	}
 	rules, ok := domainRules[tld]
 	if !ok {
-		// fmt.Printf("findDomainRule(%q) --> no such tld\n", domain)
 		return nil
 	}
 
 	// rules are sorted in presidence, so first match is the match
-	for i := range rules{
-		// fmt.Printf("    %d  %s  test  %v\n", i, strippedDomain, rules[i])
+	rule = nil
+	for i := range rules {
 		if rules[i].match(strippedDomain) {
-			// fmt.Printf("findDomainRule(%q) --> rule %v\n", domain, rules[i])
-			return &rules[i]
+			rule = &rules[i]
+			break
 		}
 	}
 
-	// fmt.Printf("findDomainRule(%q) --> no matching rule\n", domain)
-	return nil
+	theRuleCache.store(domain, rule)
+
+	return rule
 }
