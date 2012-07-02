@@ -3,8 +3,11 @@ package cookiejar
 import (
 	"bytes"
 	"encoding/gob"
+	"fmt"
 	"time"
 )
+
+var _ = fmt.Printf
 
 // FlatStorage implements a simple storage for cookies.  The actual storage
 // is an unsorted arry of pointers to the stored cookies which is searched
@@ -79,7 +82,7 @@ func (f *FlatStorage) Find(domain, path, name string, now time.Time) *Cookie {
 		}
 
 		// track expired and least used ones
-		if expiredIdx != -1 {
+		if expiredIdx == -1 {
 			if cookie.IsExpired(now) {
 				expiredIdx = i
 			} else if cookie.LastAccess.Before(leastUsed) {
@@ -200,7 +203,6 @@ func (f *FlatStorage) All(now time.Time) (cookies []*Cookie) {
 	return f.cookies
 }
 
-func aaaaa() {
-	jar := Jar{}
-	jar.Storage = NewFlatStorage(5)
+func flatStorageImplementsStorage() {
+	_ = Jar{Storage: NewFlatStorage(5)}
 }

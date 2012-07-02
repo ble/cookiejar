@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"time"
+	// "fmt"
 )
 
 // FancyStorage implements Storage and keeps a FlatStorage for each
@@ -38,10 +39,14 @@ func (f *FancyStorage) key(domain string) (key string) {
 				dot = true
 			}
 		}
+		if key == "" {
+			key = domain
+		}
 	} else {
 		// www.bbc.uk.co  -->  bbc.uk.co
 		key, _ = effectiveTldPlusOne(domain)
 	}
+	// fmt.Printf("using %q as key for domain %q\n", key, domain)
 	return key
 }
 
@@ -82,6 +87,7 @@ func (f *FancyStorage) Find(domain, path, name string, now time.Time) *Cookie {
 	if !ok {
 		fl = NewFlatStorage(5)
 		f.flat[key] = fl
+		// fmt.Printf("Allocate new flat for tld %s\n", key)
 	}
 
 	return fl.Find(domain, path, name, now)
@@ -124,7 +130,7 @@ func (f *FancyStorage) Cleanup(total, perDomain int, now time.Time) (removed int
 
 func (f *FancyStorage) All(now time.Time) (cookies []*Cookie) {
 	for _, flat := range f.flat {
-		cookies = append(flat.All(now))
+		cookies = append(cookies, flat.All(now)...)
 	}
 	return cookies
 }
