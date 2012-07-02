@@ -33,6 +33,51 @@ const (
 	MaxBytesPerCookie   = 4096
 )
 
+// JarConfig determines the properties of a CookieJar.
+type JarConfig struct {
+	// Maximum number of bytes for name + value of each cookie.  Cookies
+	// with a higher storage requirement are silently droped while trying
+	// to set such a cookie.
+	// A value <= 0 indicates "unlimited".
+	MaxBytesPerCookie int
+
+	// Maximum number of cookies per logical domain.  The number of cookies
+	// for a logical domain contains the cookies for this domain and for 
+	// all it's sub-domain as well (thus preventing a malicious domain of 
+	// flooding the jar by excessive amounts of cookies from sub-domains.)
+	// A value <= 0 indicates "unlimited".
+	MaxCookiesPerDomain int
+
+	// Maximum total number of cookies stored in the cookiejar.
+	// A value <= 0 indicates "unlimited".
+	MaxCookiesTotal int
+
+	// If FlatStorage is set to true, than the internal storage of
+	// the cookies will be in a flat array which is faster of only
+	// a few cookies from a handful of domains has to be handeled.
+	FlatStorage bool
+
+	// RFC 6265 forbides cookies on IP addresses, but browsers typically 
+	// do allow host-cookies on an IP address.  This browser-like behaviour
+	// can be switched on with AllowHostCookieOnIP
+	AllowHostCookieOnIP bool
+
+	// If RejectPublicSuffixes is set to true, than the cookiejar will
+	// reject domain cookies on known public suffixes.
+	// See http://www.http://publicsuffix.org
+	RejectPublicSuffixes bool
+}
+
+// DefaultJarConfig
+var DefaultJarConfig = JarConfig{
+	MaxBytesPerCookie:    4096,
+	MaxCookiesPerDomain:  50,
+	MaxCookiesTotal:      3000,
+	FlatStorage:          false,
+	AllowHostCookieOnIP:  false,
+	RejectPublicSuffixes: true,
+}
+
 // -------------------------------------------------------------------------
 // Jar
 
@@ -55,55 +100,32 @@ const (
 // cookies.
 //
 type Jar struct {
-	// Maximum number of cookies per logical domain.  The number of cookies
-	// for a logical domain contains the cookies for this domain and for 
-	// all it's sub-domain as well (thus preventing a malicious domain of 
-	// flooding the jar by excessive amounts of cookies from sub-domains.)
-	// A value < 0 indicates "unlimited".
-	MaxCookiesPerDomain int
+	config  JarConfig
+	storage Storage
 
-	// Maximum total number of cookies in jar.
-	// A value < 0 indicates "unlimited".
-	MaxCookiesTotal int
+	lock sync.Mutex // the single big lock
+	once sync.Once  // used to initialise storage once
 
-	// Maximum number of bytes for name + value of each cookie.  Cookies
-	// with a higher storage requirement are silently droped while trying
-	// to set such a cookie.
-	// A value < 0 indicates "unlimited".
-	MaxBytesPerCookie int
-
-	// If LaxMode is true, than the jar will be a bit more browser like and
-	// allow a host cookie for an IP address.
-	LaxMode bool
-
-	// If true then domain cookies may be set for a public suffix domain
-	// too.
-	AllowAllDomains bool
-
-	lock    sync.Mutex // the single big lock
-	once    sync.Once  // used to initialise storage once
-	Storage Storage
-
-	total int // allocate space in total = \sum_{f\in storage} len(f.cookies)
-	empty int // known entries in total to be empty i.e. expired or delted
+	total, empty int
 }
 
-func (jar *Jar) maxCookiesTotal() int {
-	return defaultVal(jar.MaxCookiesTotal, MaxCookiesTotal)
-}
-func (jar *Jar) maxCookiesPerDomain() int {
-	return defaultVal(jar.MaxCookiesPerDomain, MaxCookiesPerDomain)
-}
-func (jar *Jar) maxBytesPerCookie() int {
-	return defaultVal(jar.MaxBytesPerCookie, MaxBytesPerCookie)
-}
-func defaultVal(val, dflt int) int {
-	if val == 0 {
-		return dflt
-	} else if val < 0 {
-		return 1<<31 - 1 // MaxInt32
+// NewJar sets up a cookie jar with the given configuration.
+func NewJar(config JarConfig) *Jar {
+	if config.MaxBytesPerCookie <= 0 {
+		config.MaxBytesPerCookie = 1<<31 - 1 // "unlimited"
 	}
-	return val
+	jar := &Jar{
+		config: config,
+	}
+	if config.FlatStorage {
+		jar.storage = NewFlatStorage(10, config.MaxCookiesTotal)
+	} else {
+		fancystore := NewFancyStorage(!config.RejectPublicSuffixes)
+		fancystore.maxTotal = config.MaxCookiesTotal
+		fancystore.maxPerDomain = config.MaxCookiesPerDomain
+		jar.storage = fancystore
+	}
+	return jar
 }
 
 // SetCookies handles the receipt of the cookies in a reply for the given URL.
@@ -123,7 +145,7 @@ func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 	defaultpath := defaultPath(u)
 	now := time.Now()
 
-	maxBytes := jar.maxBytesPerCookie()
+	maxBytes := jar.config.MaxBytesPerCookie
 
 	jar.lock.Lock()
 	defer jar.lock.Unlock()
@@ -154,7 +176,7 @@ func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 		now = now.Add(time.Nanosecond)
 	}
 
-	jar.Storage.Cleanup(jar.MaxCookiesTotal, jar.MaxCookiesPerDomain, now)
+	jar.storage.Cleanup(jar.config.MaxCookiesTotal, jar.config.MaxCookiesPerDomain, now)
 }
 
 // GobEncode implements the gob.GobEncoder interface.
@@ -162,7 +184,7 @@ func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 // i.e. session cookies (or expired) cookies are discarded
 // if gob-encoded and gob-decoded afterwards.
 func (jar *Jar) GobEncode() ([]byte, error) {
-	return jar.Storage.GobEncode()
+	return jar.storage.GobEncode()
 }
 
 // GobDecode implements the gob.GobDecoder interface.
@@ -235,11 +257,11 @@ func (jar *Jar) update(host, defaultpath string, now time.Time, recieved *http.C
 		}
 	}
 	if deleteRequest {
-		jar.Storage.Delete(domain, path, recieved.Name)
+		jar.storage.Delete(domain, path, recieved.Name)
 		return deleteCookie
 	}
 
-	cookie := jar.Storage.Find(domain, path, recieved.Name, now)
+	cookie := jar.storage.Find(domain, path, recieved.Name, now)
 	if len(cookie.Name) == 0 {
 		// a new cookie
 		cookie.Domain = domain
@@ -284,7 +306,7 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 
 	// no hostname, but just an IP address
 	if isIP(host) {
-		if jar.LaxMode && domainAttr == host {
+		if jar.config.AllowHostCookieOnIP && domainAttr == host {
 			// in non-strict mode: allow host cookie if both domain 
 			// and host are IP addresses and equal. (IE/FF/Chrome)
 			return host, true, nil
@@ -313,7 +335,7 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 		return "", false, ErrTLDDomainCookie
 	}
 
-	if !jar.AllowAllDomains {
+	if jar.config.RejectPublicSuffixes {
 		// RFC 6265 section 5.3:
 		// 5. If the user agent is configured to reject "public 
 		// suffixes" and the domain-attribute is a public suffix:
@@ -366,7 +388,7 @@ func (jar *Jar) Cookies(u *url.URL) []*http.Cookie {
 		path = "/"
 	}
 
-	cookies := jar.Storage.Retrieve(host, path, secure, time.Now())
+	cookies := jar.storage.Retrieve(host, path, secure, time.Now())
 	sort.Sort(sendList(cookies))
 
 	// fill into slice of http.Cookies and update LastAccess time
@@ -384,5 +406,5 @@ func (jar *Jar) Cookies(u *url.URL) []*http.Cookie {
 }
 
 func (jar *Jar) All(now time.Time) []*Cookie {
-	return jar.Storage.All(now)
+	return jar.storage.All(now)
 }

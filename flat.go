@@ -13,14 +13,16 @@ var _ = fmt.Printf
 // is an unsorted arry of pointers to the stored cookies which is searched
 // linearely any time we look for a cookie
 type FlatStorage struct {
-	MaxCookies int // maximal number of cookies to keep. <=0 indicates unlimited.
-
-	cookies []*Cookie // flat list of cookies here
+	maxCookies int       // maximal number of cookies to keep. <=0 indicates unlimited.
+	cookies    []*Cookie // flat list of cookies here
 }
 
 // NewFlatStorage creates a FlatStorage with the given capacity of initial.
-func NewFlatStorage(initial int) *FlatStorage {
-	return &FlatStorage{cookies: make([]*Cookie, 0, initial)}
+func NewFlatStorage(initial, max int) *FlatStorage {
+	return &FlatStorage{
+		maxCookies: max,
+		cookies:    make([]*Cookie, 0, initial),
+	}
 }
 
 // GobEncode implements the gob.GobEncoder interface.
@@ -99,7 +101,7 @@ func (f *FlatStorage) Find(domain, path, name string, now time.Time) *Cookie {
 	}
 
 	// reuse least used cookie if domain storage is full
-	if f.MaxCookies > 0 && len(f.cookies) >= f.MaxCookies {
+	if f.maxCookies > 0 && len(f.cookies) >= f.maxCookies {
 		// reuse least used
 		f.cookies[oldestIdx].Name = "" // clear name to indicate "new"
 		return f.cookies[oldestIdx]
@@ -201,8 +203,4 @@ func (f *FlatStorage) cleanupPerDomain(max int) (removed int) {
 func (f *FlatStorage) All(now time.Time) (cookies []*Cookie) {
 	f.RemoveExpired(now)
 	return f.cookies
-}
-
-func flatStorageImplementsStorage() {
-	_ = Jar{Storage: NewFlatStorage(5)}
 }

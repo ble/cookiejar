@@ -11,9 +11,9 @@ import (
 // "domain", e.g. for google.com and bbc.uk.co.  Wheter the "domain"
 // is TLD plus one or the public suffix plus can be controlled.
 type FancyStorage struct {
-	tldPlusOne          bool // if true use TLD+1 instead of (effective TLD)+1
-	MaxCookiesPerDomain int
-	MaxCookiesTotal     int
+	tldPlusOne   bool // if true use TLD+1 instead of (effective TLD)+1
+	maxPerDomain int
+	maxTotal     int
 
 	flat map[string]*FlatStorage
 }
@@ -85,7 +85,7 @@ func (f *FancyStorage) Find(domain, path, name string, now time.Time) *Cookie {
 	key := f.key(domain)
 	fl, ok := f.flat[key]
 	if !ok {
-		fl = NewFlatStorage(5)
+		fl = NewFlatStorage(5, f.maxPerDomain)
 		f.flat[key] = fl
 		// fmt.Printf("Allocate new flat for tld %s\n", key)
 	}
@@ -133,9 +133,4 @@ func (f *FancyStorage) All(now time.Time) (cookies []*Cookie) {
 		cookies = append(cookies, flat.All(now)...)
 	}
 	return cookies
-}
-
-func aaaa() {
-	jar := Jar{}
-	jar.Storage = NewFancyStorage(true)
 }

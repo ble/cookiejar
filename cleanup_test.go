@@ -32,51 +32,73 @@ func (jar *Jar) allNames() string {
 }
 
 func TestMaxTotal(t *testing.T) {
-	jar := &Jar{MaxCookiesPerDomain: 100, MaxCookiesTotal: 3, Storage: NewFlatStorage(5)} // at most 3 cookies in total in jar
+	cfg := JarConfig{
+		MaxCookiesPerDomain: 100,
+		MaxCookiesTotal:     3, // at most 3 cookies in total in jar
+		FlatStorage:         true,
+	}
+	jar := NewJar(cfg)
+	testMaxTotal(jar, t, cfg.FlatStorage)
+
+	cfg.FlatStorage = false
+	jar = NewJar(cfg)
+	testMaxTotal(jar, t, cfg.FlatStorage)
+}
+
+func testMaxTotal(jar *Jar, t *testing.T, flat bool) {
 	u, _ := url.Parse("http://www.example.com")
 
-	// fill up to capacity
-	jar.SetCookies(u, []*http.Cookie{
-		&http.Cookie{Name: "a", Value: "1"},
-		&http.Cookie{Name: "b", Value: "2"},
-		&http.Cookie{Name: "c", Value: "3"},
-	})
-	if jar.allNames() != "a;b;c" {
-		t.Errorf("Initial. Have %s", jar.allNames())
+	for i, tc := range []struct {
+		cookies []*http.Cookie
+		expect  string
+	}{
+		{
+			[]*http.Cookie{
+				&http.Cookie{Name: "a", Value: "1"},
+				&http.Cookie{Name: "b", Value: "2"},
+				&http.Cookie{Name: "c", Value: "3"},
+			}, "a;b;c",
+		},
+		{
+			[]*http.Cookie{&http.Cookie{Name: "d", Value: "4"}}, "b;c;d",
+		},
+		{
+			[]*http.Cookie{
+				&http.Cookie{Name: "e", Value: "5"},
+				&http.Cookie{Name: "f", Value: "6"},
+				&http.Cookie{Name: "g", Value: "7"},
+				&http.Cookie{Name: "h", Value: "8"},
+			}, "f;g;h",
+		},
+		{
+			[]*http.Cookie{&http.Cookie{Name: "g", MaxAge: -1}}, "f;h",
+		},
+		{
+			[]*http.Cookie{&http.Cookie{Name: "i", Value: "9"}}, "f;h;i",
+		},
+	} {
+		jar.SetCookies(u, tc.cookies)
+		if jar.allNames() != tc.expect {
+			t.Errorf("%d (flat=%t). Have %q, Want %q", i, flat, jar.allNames(), tc.expect)
+		}
 	}
 
-	// adding one should drop one
-	jar.SetCookies(u, []*http.Cookie{&http.Cookie{Name: "d", Value: "4"}})
-	if jar.allNames() != "b;c;d" {
-		t.Errorf("Add one. Have %s", jar.allNames())
-	}
-
-	// adding 4
-	jar.SetCookies(u, []*http.Cookie{
-		&http.Cookie{Name: "e", Value: "5"},
-		&http.Cookie{Name: "f", Value: "6"},
-		&http.Cookie{Name: "g", Value: "7"},
-		&http.Cookie{Name: "h", Value: "8"},
-	})
-	if jar.allNames() != "f;g;h" {
-		t.Errorf("Add four. Have %s", jar.allNames())
-	}
-
-	// deleting one
-	jar.SetCookies(u, []*http.Cookie{&http.Cookie{Name: "g", MaxAge: -1}})
-	if jar.allNames() != "f;h" {
-		t.Errorf("Delete one. Have %s", jar.allNames())
-	}
-
-	// adding one should be okay
-	jar.SetCookies(u, []*http.Cookie{&http.Cookie{Name: "i", Value: "9"}})
-	if jar.allNames() != "f;h;i" {
-		t.Errorf("Add one 2. Have %s", jar.allNames())
-	}
 }
 
 func TestMaxPerDomain(t *testing.T) {
-	jar := &Jar{MaxCookiesPerDomain: 2, MaxCookiesTotal: 100, Storage: NewFancyStorage(true)} // at most 2 cookies per domain
+	cfg := JarConfig{
+		MaxCookiesPerDomain: 2,
+		MaxCookiesTotal:     100,
+		FlatStorage:         true,
+	}
+	jar := NewJar(cfg)
+	testMaxPerDomain(jar, t, cfg.FlatStorage)
+	cfg.FlatStorage = false
+	jar = NewJar(cfg)
+	testMaxPerDomain(jar, t, cfg.FlatStorage)
+}
+
+func testMaxPerDomain(jar *Jar, t *testing.T, flat bool) {
 	u1, _ := url.Parse("http://first.domain")
 	u2, _ := url.Parse("http://second.domain")
 	u3, _ := url.Parse("http://third.domain")
@@ -107,13 +129,13 @@ func TestMaxPerDomain(t *testing.T) {
 	// adding to third
 	jar.SetCookies(u3, []*http.Cookie{&http.Cookie{Name: "g", Value: "7"}})
 	if jar.allNames() != "a;b;c;d;f;g" {
-		t.Errorf("Add to third.domain. Have %s", jar.allNames())
+		t.Errorf("(flat=%t) Add to third.domain. Have %s", flat, jar.allNames())
 	}
 
 	// adding to second
 	jar.SetCookies(u2, []*http.Cookie{&http.Cookie{Name: "h", Value: "8"}})
 	if jar.allNames() != "a;b;d;f;g;h" {
-		t.Errorf("Add to second.domain. Have %s", jar.allNames())
+		t.Errorf("(flat=%t) Add to second.domain. Have %s", flat, jar.allNames())
 	}
 
 	// adding to first
@@ -122,12 +144,22 @@ func TestMaxPerDomain(t *testing.T) {
 		&http.Cookie{Name: "j", Value: "10", Domain: "first.domain"},
 	})
 	if jar.allNames() != "d;f;g;h;i;j" {
-		t.Errorf("Add to first.domain. Have %s", jar.allNames())
+		t.Errorf("(flat=%t) Add to first.domain. Have %s", flat, jar.allNames())
 	}
 }
 
 func TestExpiresCleanup(t *testing.T) {
-	jar := Jar{Storage: NewFlatStorage(10)}
+	cfg := JarConfig{
+		FlatStorage: true,
+	}
+	jar := NewJar(cfg)
+	testExpiresCleanup(jar, t)
+	cfg.FlatStorage = true
+	jar = NewJar(cfg)
+	testExpiresCleanup(jar, t)
+}
+
+func testExpiresCleanup(jar *Jar, t *testing.T) {
 	u, _ := url.Parse("http://www.example.com")
 
 	// fill up some cookies 
@@ -152,9 +184,19 @@ func TestExpiresCleanup(t *testing.T) {
 }
 
 func TestHonourLastAccesInCleanup(t *testing.T) {
-	storage := NewFlatStorage(15)
-	storage.MaxCookies = 6
-	jar := &Jar{MaxCookiesPerDomain: 100, MaxCookiesTotal: 6, Storage: storage} // at most 6 cookies  
+	cfg := JarConfig{
+		MaxCookiesPerDomain: 100,
+		MaxCookiesTotal:     6,
+		FlatStorage:         true,
+	}
+	jar := NewJar(cfg)
+	testHonourLastAccesInCleanup(jar, t, cfg.FlatStorage)
+	cfg.FlatStorage = false
+	jar = NewJar(cfg)
+	testHonourLastAccesInCleanup(jar, t, cfg.FlatStorage)
+}
+
+func testHonourLastAccesInCleanup(jar *Jar, t *testing.T, flat bool) {
 	u, _ := url.Parse("http://www.example.com")
 	uB, _ := url.Parse("http://www.example.com/B/too")
 
@@ -171,7 +213,7 @@ func TestHonourLastAccesInCleanup(t *testing.T) {
 		&http.Cookie{Name: "f", Value: "6", Path: "/B"},
 	})
 	if jar.allNames() != "a;b;c;d;e;f" {
-		t.Errorf("Initial. Have %s", jar.allNames())
+		t.Errorf("Initial (%t). Have %s", flat, jar.allNames())
 	}
 
 	// retrieve from path B: should update LastAccess on "/B-path-cookies"
@@ -186,7 +228,7 @@ func TestHonourLastAccesInCleanup(t *testing.T) {
 		&http.Cookie{Name: "i", Value: "9"},
 	})
 	if jar.allNames() != "b;d;f;g;h;i" {
-		t.Errorf("After. Have %s Want b;d;f;g;h;i", jar.allNames())
+		t.Errorf("After (%t). Have %s Want b;d;f;g;h;i", flat, jar.allNames())
 	}
 
 }
