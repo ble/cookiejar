@@ -1,8 +1,6 @@
 package cookiejar
 
 import (
-	"bytes"
-	"encoding/gob"
 	"fmt"
 	"time"
 )
@@ -23,37 +21,6 @@ func NewFlatStorage(initial, max int) *FlatStorage {
 		maxCookies: max,
 		cookies:    make([]*Cookie, 0, initial),
 	}
-}
-
-// GobEncode implements the gob.GobEncoder interface.
-func (f *FlatStorage) GobEncode() ([]byte, error) {
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	encoder.Encode(f.cookies)
-	return buf.Bytes(), nil
-}
-
-// GobDecode implements the gob.GobDecoder interface.
-// Only nonexpired cookies will be added to the jar.
-func (f *FlatStorage) GobDecode(buf []byte) error {
-	// Read everything into data)
-	data := make([]*Cookie, 0)
-	bb := bytes.NewBuffer(buf)
-	decoder := gob.NewDecoder(bb)
-	err := decoder.Decode(&data)
-	if err != nil {
-		return err
-	}
-
-	f.cookies = make([]*Cookie, 0)
-	now := time.Now()
-	for _, cookie := range data {
-		if cookie.IsExpired(now) {
-			continue
-		}
-		f.cookies = append(f.cookies, cookie)
-	}
-	return nil
 }
 
 // Retrieve fetches the unsorted list of cookies to be sent

@@ -73,6 +73,7 @@ func effectiveTldPlusOne(domain string) (etldp1 string, tooShort bool) {
 	if rule == nil {
 		// no rule from our list matches: default rule is "*"
 		n = 2
+		tooShort = true
 	} else {
 		if rule.rule == "" {
 			n = 2

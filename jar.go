@@ -6,14 +6,14 @@
 //
 // The Jar implementation of the http.CookeiJar interface is a general purpose
 // implementation which may be used to store and retireve cookies from 
-// arbitary sites.
+// arbitary sites in http and https requests.
 // 
 //
 package cookiejar
 
 import (
-	// "bytes"
-	// "encoding/gob"
+	"bytes"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,6 +27,10 @@ import (
 var _ = fmt.Println
 
 // JarConfig determines the properties of a CookieJar.
+//
+// A Jar with a FlatStorage does not enforce a MaxCookiesPerDomain
+// constraint in an efficientway; on the other hand a non-FlatStorage
+// jar cannot handle a MaxCookiesTotal constraint efficently.
 type JarConfig struct {
 	// Maximum number of bytes for name + value of each cookie.  Cookies
 	// with a higher storage requirement are silently droped while trying
@@ -97,8 +101,11 @@ var Default = JarConfig{
 
 // A Jar implements the http CookieJar interface.
 //
-// A Jar will neither store cookies in a call to SetCookies nor return 
-// cookies from a call to Cookies if the URL is a non-HTTP URL. 
+// A Jar will neither store cookies in a call to SetCookies nor return cookies
+// from a call to Cookies if the URL is a non-HTTP URL.
+// As HTTP would require full qualified domain names in the URL anyway this
+// cookie jar implementation treats all domain names as beeing fully qualified
+// (absolute) even if not ending in a ".".
 type Jar struct {
 	config  JarConfig
 	storage Storage
@@ -117,15 +124,20 @@ func NewJar(config JarConfig) *Jar {
 	jar := &Jar{
 		config: config,
 	}
-	if config.FlatStorage {
-		jar.storage = NewFlatStorage(10, config.MaxCookiesTotal)
+	jar.allocStorage()
+	return jar
+}
+
+// allocStorage sets up a new empty storage based on the jar's config
+func (jar *Jar) allocStorage() {
+	if jar.config.FlatStorage {
+		jar.storage = NewFlatStorage(10, jar.config.MaxCookiesTotal)
 	} else {
-		fancystore := NewFancyStorage(!config.RejectPublicSuffixes)
-		fancystore.maxTotal = config.MaxCookiesTotal
-		fancystore.maxPerDomain = config.MaxCookiesPerDomain
+		fancystore := NewFancyStorage(!jar.config.RejectPublicSuffixes)
+		fancystore.maxTotal = jar.config.MaxCookiesTotal
+		fancystore.maxPerDomain = jar.config.MaxCookiesPerDomain
 		jar.storage = fancystore
 	}
-	return jar
 }
 
 // SetCookies handles the receipt of the cookies in a reply for the given URL.
@@ -181,31 +193,45 @@ func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 
 // GobEncode implements the gob.GobEncoder interface.
 // Only nonexpired and persistent cookies will be serialized
-// i.e. session cookies (or expired) cookies are discarded
-// if gob-encoded and gob-decoded afterwards.
+// i.e. session cookies (or expired) cookies are discarded.
 func (jar *Jar) GobEncode() ([]byte, error) {
-	return jar.storage.GobEncode()
+	all := jar.All(time.Now())
+	// remove session cookies
+	for i := 0; i < len(all); i++ {
+		if all[i].SessionCookie() {
+			all[i] = all[len(all)-1]
+			all = all[:len(all)-1]
+			i--
+		}
+	}
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	encoder.Encode(all)
+	return buf.Bytes(), nil
 }
 
 // GobDecode implements the gob.GobDecoder interface.
 // Only nonexpired cookies will be added to the jar.
 func (jar *Jar) GobDecode(buf []byte) error {
-	/***
+	all := make([]*Cookie, 0)
 	bb := bytes.NewBuffer(buf)
 	decoder := gob.NewDecoder(bb)
-	err := decoder.Decode()
+	err := decoder.Decode(&all)
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 
-	jar.cookies = jar.cookies[:0]
-	for _, cookie := range data {
-		if cookie.isExpired() {
+	// stuff cookies into storage while rejecting expired ones
+	jar.allocStorage()
+	for _, cookie := range all {
+		if cookie.IsExpired(now) {
 			continue
 		}
-		jar.cookies = append(jar.cookies, *cookie)
+		cp := jar.storage.Find(cookie.Domain, cookie.Path, cookie.Name, now)
+		*cp = *cookie
 	}
-	 **********/
+
 	return nil
 }
 
@@ -323,10 +349,19 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 	if domain[0] == '.' {
 		domain = domain[1:]
 	}
-	domain = strings.ToLower(domain)
+	domain = strings.ToLower(domain) // see RFC 6265 section 5.2.3
 	if len(domain) == 0 || domain[0] == '.' {
 		// we recieved either "Domain=." or "Domain=..some.thing"
 		// both are illegal
+		return "", false, ErrMalformedDomain
+	}
+	if domain[len(domain)-1] == '.' {
+		// we recieved stufflike "Domain=www.example.com."
+		// Browsers do handle such stuff (actually differently) but
+		// RFC 6265 seems to be clear here (e.g. section 4.1.2.3) in
+		// requiering a reject. 4.1.2.3 is not normative, but
+		// "Domain Matching" (5.1.3) and "Canonicalized Host Names"
+		// (5.1.2) are.
 		return "", false, ErrMalformedDomain
 	}
 

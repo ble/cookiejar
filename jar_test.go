@@ -505,6 +505,7 @@ var singleJarTests = []jarTest{
 	},
 	//
 	// Test from http://src.chromium.org/viewvc/chrome/trunk/src/net/base/cookie_monster_unittest.cc
+	// now http://src.chromium.org/viewvc/chrome/trunk/src/net/cookies/cookie_store_unittest.h
 	// 
 	{"http://www.google.com/", "DomainWithTrailingDotTest",
 		[]string{"a=1; domain=.www.google.com.", "a=1; domain=.www.google.com.."},
@@ -678,6 +679,8 @@ var groupedJarTests = [][]jarTest{
 		},
 	},
 	// Tests from http://src.chromium.org/viewvc/chrome/trunk/src/net/base/cookie_monster_unittest.cc
+	// now: http://src.chromium.org/viewvc/chrome/trunk/src/net/cookies/cookie_store_unittest.h
+	/***** original test from cookie monster, unused as we strip trailing dots from host
 	[]jarTest{
 		// 
 		{"http://www.google.com", "TestHostEndsWithDot 1",
@@ -691,6 +694,38 @@ var groupedJarTests = [][]jarTest{
 		{"http://www.google.com.", "TestHostEndsWithDot 3",
 			[]string{"b=2; domain=.google.com."},
 			[]expect{{"http://www.google.com.", "b=2"}},
+		},
+	},
+	******************************************************************/
+	[]jarTest{
+		// 
+		{"http://www.google.com", "TestHostEndsWithDot A",
+			[]string{"a=1"},
+			[]expect{
+				{"http://www.google.com", "a=1"},
+				{"http://www.google.com.", "a=1"},
+			},
+		},
+		{"http://www.google.com.", "TestHostEndsWithDot B",
+			[]string{"b=2"},
+			[]expect{
+				{"http://www.google.com", "a=1; b=2"},
+				{"http://www.google.com.", "a=1; b=2"},
+			},
+		},
+		{"http://www.google.com", "TestHostEndsWithDot C",
+			[]string{"c=3; domain=.google.com."},
+			[]expect{
+				{"http://www.google.com", "a=1; b=2"},
+				{"http://www.google.com.", "a=1; b=2"},
+			},
+		},
+		{"http://www.google.com.", "TestHostEndsWithDot D",
+			[]string{"d=4; domain=.google.com."},
+			[]expect{
+				{"http://www.google.com", "a=1; b=2"},
+				{"http://www.google.com.", "a=1; b=2"},
+			},
 		},
 	},
 	[]jarTest{

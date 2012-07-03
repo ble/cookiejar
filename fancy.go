@@ -1,8 +1,6 @@
 package cookiejar
 
 import (
-	"bytes"
-	"encoding/gob"
 	"fmt"
 	"time"
 )
@@ -50,26 +48,6 @@ func (f *FancyStorage) key(domain string) (key string) {
 	}
 	// fmt.Printf("using %q as key for domain %q\n", key, domain)
 	return key
-}
-
-// GobEncode implements the gob.GobEncoder interface.
-func (f *FancyStorage) GobEncode() ([]byte, error) {
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	encoder.Encode(f.flat)
-	return buf.Bytes(), nil
-}
-
-// GobDecode implements the gob.GobDecoder interface.
-// Only nonexpired cookies will be added to the jar.
-func (f *FancyStorage) GobDecode(buf []byte) error {
-	bb := bytes.NewBuffer(buf)
-	decoder := gob.NewDecoder(bb)
-	err := decoder.Decode(&f.flat)
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 // Retrieve fetches the unsorted list of cookies to be sent

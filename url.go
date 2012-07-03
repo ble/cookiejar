@@ -11,33 +11,39 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	// "idn/punycode"
 )
 
-func logigalDomain(domain string) {
+// dummy until real go-idn is used
+type dummy bool
 
-}
+func (d dummy) ToASCII(host string) (string, error) { return host, nil }
 
-// Host returns the (canonical) host from an URL u.
-// If the 
-func host(u *url.URL) (string, error) {
-	host := strings.ToLower(u.Host)
-	if strings.Index(host, ":") < 0 {
-		return host, nil
+var punycode dummy
+
+// host returns the (canonical) host from an URL u.
+// See RFC 6265 section 5.1.2
+// TODO: idns are not handeled at all.
+func host(u *url.URL) (host string, err error) {
+	host = strings.ToLower(u.Host)
+	if strings.HasSuffix(host, ".") {
+		// treat all domain names the same: 
+		// strip trailing dot from fully qualified domain names
+		host = host[:len(host)-1]
+	}
+	if strings.Index(host, ":") != -1 {
+		host, _, err = net.SplitHostPort(host)
+		if err != nil {
+			return "", err
+		}
 	}
 
-	// else strip port
-	host, _, err := net.SplitHostPort(host)
+	host, err = punycode.ToASCII(host)
 	if err != nil {
 		return "", err
 	}
 
-	// TODO: handle canonicalisation if really needed
-	canhost, err := host, nil //  idna.ToASCII(host)
-	if err != nil {
-		return host, err
-	}
-
-	return canhost, nil
+	return host, nil
 }
 
 // isSecure checks for https scheme

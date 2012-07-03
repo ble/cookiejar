@@ -1,7 +1,6 @@
 package cookiejar
 
 import (
-	"encoding/gob"
 	"time"
 )
 
@@ -52,7 +51,4 @@ type Storage interface {
 
 	// All exposes all stored and non-expired cookies.
 	All(now time.Time) []*Cookie
-
-	gob.GobEncoder // allows serialization of the content
-	gob.GobDecoder // allows the deserialization of the content
 }

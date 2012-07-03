@@ -105,10 +105,15 @@ func (c *Cookie) pathMatch(requestPath string) bool {
 	return false
 }
 
-// isExpired checks if cookie c is expired.  The zero value of time.Time for
-// c.Expires indicates a session cookie i.e. not expired.
+// IsExpired checks if cookie c is expired.  
 func (c *Cookie) IsExpired(now time.Time) bool {
-	return !c.Expires.IsZero() && c.Expires.Before(now)
+	return !c.SessionCookie() && c.Expires.Before(now)
+}
+
+// SessionCookie checks if a cookie c is a session cookie (i.e. has a
+// zero value for its Expires field.
+func (c *Cookie) SessionCookie() bool {
+	return c.Expires.IsZero()
 }
 
 // ------------------------------------------------------------------------
