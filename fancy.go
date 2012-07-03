@@ -3,9 +3,11 @@ package cookiejar
 import (
 	"bytes"
 	"encoding/gob"
+	"fmt"
 	"time"
-	// "fmt"
 )
+
+var _ = fmt.Println
 
 // FancyStorage implements Storage and keeps a FlatStorage for each
 // "domain", e.g. for google.com and bbc.uk.co.  Wheter the "domain"
@@ -118,13 +120,49 @@ func (f *FancyStorage) RemoveExpired(now time.Time) (removed int) {
 	return removed
 }
 
+type fancyloc struct {
+	key string
+	idx int
+}
+
 func (f *FancyStorage) Cleanup(total, perDomain int, now time.Time) (removed int) {
+	cnt := 0 // number of cookies in jar
+
+	// delegate perDomain limit to each flat storage
 	for k, fl := range f.flat {
 		removed += fl.Cleanup(perDomain, 0, now)
 		if fl.Empty() {
 			delete(f.flat, k)
+		} else {
+			cnt += len(fl.cookies)
 		}
 	}
+
+	del := cnt - total // amount to delete
+	if total <= 0 || del <= 0 {
+		return removed // done
+	}
+
+	// deletion happens on least used from all
+	// fmt.Printf("Fancy: deleting %d to to maxtotal\n", del)
+	lu := newLeastUsed(del)
+	for k, fl := range f.flat {
+		for i, cookie := range fl.cookies {
+			lu.insert(cookie, fancyloc{key: k, idx: i})
+		}
+	}
+
+	bins := make(map[string][]int)
+	for _, cookie := range lu.elements() {
+		loc := cookie.data.(fancyloc)
+		bins[loc.key] = append(bins[loc.key], loc.idx)
+	}
+	for key, rem := range bins {
+		// fmt.Printf("Fancy: deleting %d from %s to maxtotal\n", len(rem), key)
+		f.flat[key].removeAll(rem)
+		removed += len(rem)
+	}
+
 	return removed
 }
 

@@ -5,9 +5,9 @@
 package cookiejar
 
 import (
+	"container/heap"
 	"strings"
 	"time"
-	// "fmt"
 )
 
 // Cookie is the internal representation of a cookie in our jar.
@@ -134,25 +134,41 @@ func (l sendList) Swap(i, j int) { l[i], l[j] = l[j], l[i] }
 // -------------------------------------------------------------------------
 // Finding the n least used cookies
 
+// cookieplus is a pointer to a cookie plus additional data
+type heapitem struct {
+	cookie *Cookie
+	data   interface{}
+}
+
+type cookieheap []heapitem
+
+func (h cookieheap) Len() int            { return len(h) }
+func (h cookieheap) Less(i, j int) bool  { return h[i].cookie.LastAccess.After(h[j].cookie.LastAccess) }
+func (h cookieheap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *cookieheap) Push(x interface{}) { *h = append(*h, x.(heapitem)) }
+func (h *cookieheap) Pop() interface{} {
+	x := (*h)[len(*h)-1]
+	*h = (*h)[:len(*h)-1]
+	return x
+}
+
+// leastUsed keeps the n least used cookies which where insert'ed
+// with the additional data in cookies.
 type leastUsed struct {
-	n       int
-	cookies []*Cookie
+	n    int
+	elem cookieheap
 }
 
-func (lu *leastUsed) insert(cookie *Cookie) {
-	if len(lu.cookies) < lu.n {
-		lu.cookies = append(lu.cookies, cookie)
-		return
-	}
-	if !cookie.LastAccess.Before(lu.cookies[lu.n-1].LastAccess) {
-		return
-	}
-
-	i := lu.n - 2
-	for i >= 0 && cookie.LastAccess.Before(lu.cookies[i].LastAccess) {
-		i--
-	}
-	i++
-	copy(lu.cookies[i+1:], lu.cookies[i:])
-	lu.cookies[i] = cookie
+func newLeastUsed(n int) *leastUsed {
+	return &leastUsed{n: n, elem: make(cookieheap, 0, n)}
 }
+
+func (lu *leastUsed) insert(cookie *Cookie, data interface{}) {
+	heap.Push(&lu.elem, heapitem{cookie, data})
+	if len(lu.elem) > lu.n {
+		heap.Pop(&lu.elem)
+	}
+	return
+}
+
+func (lu *leastUsed) elements() []heapitem { return lu.elem }

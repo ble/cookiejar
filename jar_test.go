@@ -147,7 +147,7 @@ func TestDomainAndType(t *testing.T) {
 
 func TestStrictnessWithIP(t *testing.T) {
 	// No (host cookies) for IP addresses in strict mode
-	jar := NewJar(DefaultJarConfig)
+	jar := NewJar(Default)
 	d, h, _ := jar.domainAndType("127.0.0.1", "127.0.0.1")
 	if d != "" {
 		t.Errorf("Got %s", d)
@@ -155,7 +155,7 @@ func TestStrictnessWithIP(t *testing.T) {
 
 	// Allow host cookies for IP addresses like IE, FF and Chrome
 	// if non-strict jar.
-	cfg := DefaultJarConfig
+	cfg := Default
 	cfg.AllowHostCookieOnIP = true
 	jar = NewJar(cfg)
 	d, h, _ = jar.domainAndType("127.0.0.1", "127.0.0.1")
@@ -624,7 +624,7 @@ var singleJarTests = []jarTest{
 
 func TestSingleJar(t *testing.T) {
 	for _, tt := range singleJarTests {
-		jar := NewJar(DefaultJarConfig)
+		jar := NewJar(Default)
 		// fmt.Printf("\n%s\n", tt.description)
 		runJarTest(t, jar, tt)
 		// fmt.Printf("Jar now: %s\n\n", jar.content())
@@ -732,7 +732,7 @@ var groupedJarTests = [][]jarTest{
 
 func TestGroupedJar(t *testing.T) {
 	for _, ttt := range groupedJarTests {
-		jar := NewJar(DefaultJarConfig)
+		jar := NewJar(Default)
 		for _, tt := range ttt {
 			runJarTest(t, jar, tt)
 		}

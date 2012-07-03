@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -142,6 +143,20 @@ func (f *FlatStorage) remove(i int) {
 	f.cookies = f.cookies[:n]
 }
 
+// remove cookies at indices idx. TODO: slow
+//   orig            0 1 2 3 4 5   remove 235
+//   n=0 i=2, j=2    0 1 3 4 5
+//   n=1 i=3, j=2    0 1 4 5
+//   n=2 i=5, j=3    0 1 4
+func (f *FlatStorage) removeAll(idx []int) {
+	sort.Ints(idx)
+	for n, i := range idx {
+		j := i - n
+		// fmt.Printf("Flat: removed cookie %s\n", f.cookies[j].Name)
+		f.cookies = append(f.cookies[:j], f.cookies[j+1:]...)
+	}
+}
+
 // index of c in f.cookies
 func (f *FlatStorage) index(c *Cookie) int {
 	for i, cookie := range f.cookies {
@@ -173,6 +188,7 @@ func (f *FlatStorage) Empty() bool {
 }
 
 func (f *FlatStorage) Cleanup(total, perDomain int, now time.Time) (removed int) {
+	// fmt.Printf("Flat.Cleanup(%d, %d)\n", total, perDomain)
 	removed = f.RemoveExpired(now)
 
 	if perDomain > 0 {
@@ -181,13 +197,15 @@ func (f *FlatStorage) Cleanup(total, perDomain int, now time.Time) (removed int)
 
 	if total > 0 && len(f.cookies) > total {
 		del := len(f.cookies) - total
-		lu := leastUsed{n: del, cookies: make([]*Cookie, 0, del)}
-		for _, cookie := range f.cookies {
-			lu.insert(cookie)
+		lu := newLeastUsed(del)
+		for i, cookie := range f.cookies {
+			lu.insert(cookie, i)
 		}
-		for _, cookie := range lu.cookies {
-			f.remove(f.index(cookie))
+		rem := make([]int, del)
+		for i, c := range lu.elements() {
+			rem[i] = c.data.(int)
 		}
+		f.removeAll(rem)
 
 		removed += del
 	}
@@ -196,7 +214,16 @@ func (f *FlatStorage) Cleanup(total, perDomain int, now time.Time) (removed int)
 }
 
 func (f *FlatStorage) cleanupPerDomain(max int) (removed int) {
-	// TODO: might require code...
+	domain := func(s string) string { return s }
+
+	// sort all cookies into domain-bins
+	bins := make(map[string][]int)
+	for i, c := range f.cookies {
+		key := domain(c.Domain)
+		bins[key] = append(bins[key], i)
+	}
+
+	// 
 	return 0
 }
 

@@ -26,13 +26,6 @@ import (
 
 var _ = fmt.Println
 
-// default values if same name field in Jar is zero
-const (
-	MaxCookiesPerDomain = 50
-	MaxCookiesTotal     = 3000
-	MaxBytesPerCookie   = 4096
-)
-
 // JarConfig determines the properties of a CookieJar.
 type JarConfig struct {
 	// Maximum number of bytes for name + value of each cookie.  Cookies
@@ -68,12 +61,33 @@ type JarConfig struct {
 	RejectPublicSuffixes bool
 }
 
-// DefaultJarConfig
-var DefaultJarConfig = JarConfig{
+// MinRFC6265Config contains the minimum values as recommended by RFC 6265.
+var MinRFC6265 = JarConfig{
 	MaxBytesPerCookie:    4096,
 	MaxCookiesPerDomain:  50,
 	MaxCookiesTotal:      3000,
 	FlatStorage:          false,
+	AllowHostCookieOnIP:  false,
+	RejectPublicSuffixes: true,
+}
+
+// Unlimited describes a jar for arbitary many cookies.
+var Unlimited = JarConfig{
+	MaxBytesPerCookie:    -1,
+	MaxCookiesPerDomain:  -1,
+	MaxCookiesTotal:      -1,
+	FlatStorage:          false,
+	AllowHostCookieOnIP:  true,
+	RejectPublicSuffixes: false,
+}
+
+// Default describes a small jar, suitable for a controlled (i.e. not
+// malicious) environment with some domains and some cookies.
+var Default = JarConfig{
+	MaxBytesPerCookie:    4096,
+	MaxCookiesPerDomain:  -1,
+	MaxCookiesTotal:      100,
+	FlatStorage:          true,
 	AllowHostCookieOnIP:  false,
 	RejectPublicSuffixes: true,
 }
@@ -83,22 +97,8 @@ var DefaultJarConfig = JarConfig{
 
 // A Jar implements the http CookieJar interface.
 //
-// The empty value of Jar is a RFC 6265 conforming cookie jar which rejects 
-// domain cookies for known "public suffixes" (effective top level domains 
-// such as co.uk whose subdomain are typically not under one administrative 
-// control; see http://publicsuffix.org/).  The jar will allow 4096 bytes 
-// for len(name)+len(value) of each cookie, 3000 cookies in toal and  
-// 50 cookies per domain which are the minimum numbers required by RFC 6265.
-//
 // A Jar will neither store cookies in a call to SetCookies nor return 
 // cookies from a call to Cookies if the URL is a non-HTTP URL. 
-// 
-// Changing MaxCookiesPerDomain and MaxCookiesTotal won't take effect until 
-// the next invocation of SetCookies.  Changing MaxbytesperCookie, LaxMode 
-// and AllowAllDomains will affect only new cookies stored after the change. 
-// Changing these values is not safe while other goroutines set or retrieve
-// cookies.
-//
 type Jar struct {
 	config  JarConfig
 	storage Storage
@@ -130,7 +130,7 @@ func NewJar(config JarConfig) *Jar {
 
 // SetCookies handles the receipt of the cookies in a reply for the given URL.
 //
-// Cookies with len(Name) + len(Value) > maxBytesPerCookie (as during creation
+// Cookies with len(Name) + len(Value) > MaxBytesPerCookie (as during creation
 // of the jar) will be ignored silently as well as any cookie with a malformed
 // domain field.
 func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
