@@ -103,7 +103,6 @@ func testMaxPerDomain(jar *Jar, t *testing.T, flat bool) {
 	u1, _ := url.Parse("http://first.domain")
 	u2, _ := url.Parse("http://second.domain")
 	u3, _ := url.Parse("http://third.domain")
-	// u4, _ := url.Parse("http://fourth.domain")
 
 	// fill up to capacity with ...
 	// ... host cookies for u1
@@ -191,7 +190,7 @@ func TestHonourLastAccesInCleanup(t *testing.T) {
 		FlatStorage:         true,
 	}
 	jar := NewJar(cfg)
-	// testHonourLastAccesInCleanup(jar, t, cfg.FlatStorage)
+	testHonourLastAccesInCleanup(jar, t, cfg.FlatStorage)
 	cfg.FlatStorage = false
 	jar = NewJar(cfg)
 	testHonourLastAccesInCleanup(jar, t, cfg.FlatStorage)

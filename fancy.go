@@ -151,16 +151,9 @@ func (f *FancyStorage) Cleanup(total, perDomain int, now time.Time) (removed int
 			lu.insert(cookie, fancyloc{key: k, idx: i})
 		}
 	}
-
-	bins := make(map[string][]int)
 	for _, cookie := range lu.elements() {
 		loc := cookie.data.(fancyloc)
-		bins[loc.key] = append(bins[loc.key], loc.idx)
-	}
-	for key, rem := range bins {
-		// fmt.Printf("Fancy: deleting %d from %s to maxtotal\n", len(rem), key)
-		f.flat[key].removeAll(rem)
-		removed += len(rem)
+		f.flat[loc.key].remove(loc.idx)
 	}
 
 	return removed
