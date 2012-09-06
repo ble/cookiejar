@@ -191,9 +191,9 @@ var theRuleCache = ruleCache{cache: make([]cacheEntry, 40), idx: 0}
 //
 // We do not do step 5, this is the callers responsibility.
 func findDomainRule(domain string) (rule *domainRule) {
-	if rule, found := theRuleCache.lookup(domain); found {
-		return rule
-	}
+	// if rule, found := theRuleCache.lookup(domain); found {
+	//	return rule
+	// }
 
 	// extract TLD from domain and look up list of rules for 
 	// this TLD if present
@@ -220,7 +220,7 @@ func findDomainRule(domain string) (rule *domainRule) {
 		}
 	}
 
-	theRuleCache.store(domain, rule)
+	// theRuleCache.store(domain, rule)
 
 	return rule
 }

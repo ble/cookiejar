@@ -54,21 +54,56 @@ func fillJar(jar *Jar, fd, fc float64) {
 // -------------------------------------------------------------------------
 // Inserting three completely new (new domain, new cookie) cookies
 
+var cfgFlat = JarConfig{
+	MaxBytesPerCookie:    -1,
+	MaxCookiesPerDomain:  -1,
+	MaxCookiesTotal:      -1,
+	FlatStorage:          true,
+	AllowHostCookieOnIP:  true,
+	RejectPublicSuffixes: false,
+}
+var cfgFancy = JarConfig{
+	MaxBytesPerCookie:    -1,
+	MaxCookiesPerDomain:  -1,
+	MaxCookiesTotal:      -1,
+	FlatStorage:          false,
+	AllowHostCookieOnIP:  true,
+	RejectPublicSuffixes: false,
+}
+
 // insert into completely empty jar
-func BenchmarkInsertFreshJar(b *testing.B) {
+func BenchmarkInsertFreshFlatJar(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		jar := &Jar{}
+		jar := NewJar(cfgFlat)
+		b.StartTimer()
+		jar.SetCookies(exampleUrl, exampleCookies)
+	}
+}
+func BenchmarkInsertFreshFancyJar(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		jar := NewJar(cfgFancy)
 		b.StartTimer()
 		jar.SetCookies(exampleUrl, exampleCookies)
 	}
 }
 
 // insert into jar which has allready a cookie for that domain
-func BenchmarkInsertSetJar(b *testing.B) {
+func BenchmarkInsertSetFlatJar(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		jar := &Jar{}
+		jar := NewJar(cfgFlat)
+		jar.SetCookies(exampleUrl, []*http.Cookie{
+			&http.Cookie{Name: "hereAlready", Value: "someValue"}})
+		b.StartTimer()
+		jar.SetCookies(exampleUrl, exampleCookies)
+	}
+}
+func BenchmarkInsertSetFancyJar(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		jar := NewJar(cfgFancy)
 		jar.SetCookies(exampleUrl, []*http.Cookie{
 			&http.Cookie{Name: "hereAlready", Value: "someValue"}})
 		b.StartTimer()
@@ -77,8 +112,19 @@ func BenchmarkInsertSetJar(b *testing.B) {
 }
 
 // insert into half full jar
-func BenchmarkInsertHalfJar(b *testing.B) {
-	jar := &Jar{}
+func BenchmarkInsertHalfFlatJar(b *testing.B) {
+	jar := NewJar(cfgFlat)
+	fillJar(jar, 0.75, 0.75)
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		theRuleCache = ruleCache{cache: make([]cacheEntry, 20)}
+		u, _ := url.Parse(fmt.Sprintf("http://www.%dexample.org/some/path", i))
+		b.StartTimer()
+		jar.SetCookies(u, exampleCookies)
+	}
+}
+func BenchmarkInsertHalfFancyJar(b *testing.B) {
+	jar := NewJar(cfgFancy)
 	fillJar(jar, 0.75, 0.75)
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
@@ -90,8 +136,19 @@ func BenchmarkInsertHalfJar(b *testing.B) {
 }
 
 // insert into completely full jar, thus deletion of exxess cookies
-func BenchmarkInsertFullJar(b *testing.B) {
-	jar := &Jar{}
+func BenchmarkInsertFullFlatJar(b *testing.B) {
+	jar := NewJar(cfgFlat)
+	fillJar(jar, 1, 1)
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		theRuleCache = ruleCache{cache: make([]cacheEntry, 20)}
+		u, _ := url.Parse(fmt.Sprintf("http://www.%dexample.org/some/path", i))
+		b.StartTimer()
+		jar.SetCookies(u, exampleCookies)
+	}
+}
+func BenchmarkInsertFullFancyJar(b *testing.B) {
+	jar := NewJar(cfgFancy)
 	fillJar(jar, 1, 1)
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
@@ -183,7 +240,7 @@ func BenchmarkGetNexFullJar(b *testing.B) {
 //   - get a cooke update
 //   - do some work again
 // where "work" is 50 plain requests each
-func BenchmarkAppUsage(b *testing.B) {
+func BenchmarkAppUsageFlatJar(b *testing.B) {
 	host1, _ := url.Parse("http://www.host1.com")
 	sub1, _ := url.Parse("http://abc.host1.com")
 	host2, _ := url.Parse("http://www.host2.biz")
@@ -198,7 +255,7 @@ func BenchmarkAppUsage(b *testing.B) {
 	}
 
 	for i := 0; i < b.N; i++ {
-		jar := Jar{}
+		jar := NewJar(cfgFlat)
 		for k := 0; k < 5; k++ {
 			jar.SetCookies(host1, cookies)
 			jar.SetCookies(host2, cookies)
@@ -225,6 +282,50 @@ func BenchmarkAppUsage(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkAppUsageFancyJar(b *testing.B) {
+	host1, _ := url.Parse("http://www.host1.com")
+	sub1, _ := url.Parse("http://abc.host1.com")
+	host2, _ := url.Parse("http://www.host2.biz")
+	sub2, _ := url.Parse("http://xyz.host2.biz")
+	host3, _ := url.Parse("http://www.host3.org")
+	host4, _ := url.Parse("http://www.host4.net")
+	cookies := []*http.Cookie{
+		&http.Cookie{Name: "nameA", Value: "value1", MaxAge: 600},
+		&http.Cookie{Name: "nameB", Value: "value2", Domain: "host1.com"},
+		&http.Cookie{Name: "nameC", Value: "value3"},
+		&http.Cookie{Name: "nameD", Value: "value4", Domain: "host2.biz", MaxAge: 600},
+	}
+
+	for i := 0; i < b.N; i++ {
+		jar := NewJar(cfgFancy)
+		for k := 0; k < 5; k++ {
+			jar.SetCookies(host1, cookies)
+			jar.SetCookies(host2, cookies)
+			for j := 0; j < 50; j++ {
+				if len(jar.Cookies(host1)) != 3 {
+					b.Errorf("Got %v", jar.Cookies(host1))
+				}
+				if len(jar.Cookies(sub1)) != 1 {
+					b.Errorf("Got %v", jar.Cookies(sub2))
+				}
+				if len(jar.Cookies(host2)) != 3 {
+					b.Errorf("Got %v", jar.Cookies(host2))
+				}
+				if len(jar.Cookies(sub2)) != 1 {
+					b.Errorf("Got %v", jar.Cookies(sub2))
+				}
+				if len(jar.Cookies(host3)) != 0 {
+					b.Errorf("Got %v", jar.Cookies(host3))
+				}
+				if len(jar.Cookies(host4)) != 0 {
+					b.Errorf("Got %v", jar.Cookies(host4))
+				}
+			}
+		}
+	}
+}
+
 
 /*************
 
