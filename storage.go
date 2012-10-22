@@ -43,7 +43,7 @@ func (f *flat) retrieve(https bool, host, path string) []*Cookie {
 	}
 
 	if expired > 10 && expired > len(*f)/5 {
-		f.cleanup()
+		f.cleanup(expired)
 	}
 
 	return selection
@@ -103,8 +103,41 @@ func (f *flat) delete(domain, path, name string) bool {
 }
 
 // cleanup removes expired cookies from f
-func (f *flat) cleanup() {
+func (f *flat) cleanup(num int) {
+	// corner cases
+	if num == 0 {
+		return
+	}
+	if num == len(*f) {
+		*f = (*f)[:0]
+		return
+	}
 
+	i, j, n := 0, len(*f), 0
+
+	for n < num {
+		for i < j && !(*f)[i].Expired() { // find next expired
+			i++
+		}
+		if i == j-1 {
+			j--
+			break
+		}
+		j--
+		for j > i && (*f)[j].Expired() { // find non expired from back
+			j--
+			n++
+		}
+
+		if i == j || n == num {
+			break
+		}
+		(*f)[i] = (*f)[j] // overwrite expired with non-expired
+		i++
+		n++
+	}
+
+	*f = (*f)[0:j] // reslice
 }
 
 // -------------------------------------------------------------------------

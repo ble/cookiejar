@@ -7,8 +7,11 @@ package cookiejar
 // Tests for the unexported helper functions.
 
 import (
+	"fmt"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 )
 
 var defaultPathTests = []struct{ path, dir string }{
@@ -128,4 +131,56 @@ func TestDomainAndType(t *testing.T) {
 				tt.outDomain, tt.outHostOnly, d, h)
 		}
 	}
+}
+
+var flatCleanupTests = []struct {
+	spec string // E: expired cookie at this position in flat slice
+	exp  string // expected order of cookies after cleanup
+}{
+	{"vvvvv", "01234"},
+	{"vvvvE", "0123"},
+	{"vvvEE", "012"},
+	{"Evvvv", "4123"},
+	{"EEvvv", "432"},
+	{"EvEvv", "413"},
+	{"EvEvE", "31"},
+	{"EvEEE", "1"},
+	{"EEEvv", "43"},
+	{"EEEvE", "3"},
+	{"EEEEE", ""},
+	{"EEEvvEEE", "43"},
+	{"EEvEvEEE", "42"},
+	{"EEvEvvEE", "542"},
+	{"EEvEEvEE", "52"},
+	{"vvEEEEEE", "01"},
+}
+
+func TestFlatCleanup(t *testing.T) {
+	past := time.Now().Add(-1 * time.Hour)
+	generate := func(spec string) *flat {
+		// turn a spec into a flat slice
+		f := make(flat, len(spec))
+		for i := range spec {
+			name := fmt.Sprintf("%d", i) // name is index in original slice
+			cookie := Cookie{Name: name}
+			if spec[i] == 'E' {
+				cookie.Expires = past
+			}
+			f[i] = &cookie
+		}
+		return &f
+	}
+
+	for i, tt := range flatCleanupTests {
+		fp := generate(tt.spec)
+		fp.cleanup(strings.Count(tt.spec, "E"))
+		s := ""
+		for i := range *fp {
+			s += (*fp)[i].Name
+		}
+		if s != tt.exp {
+			t.Errorf("%d %s: Want %q, got %q", i, tt.spec, tt.exp, s)
+		}
+	}
+
 }
