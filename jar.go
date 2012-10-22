@@ -2,20 +2,21 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package cookiejar provides a RFC 6265 conforming storage for http cookies.
+// Package cookiejar provides a in-memory storage for http cookies.
 //
-// The Jar implementation of the http.CookeiJar interface is a general purpose
-// implementation which may be used to store and retireve cookies from 
-// arbitary sites in http and https requests.
-// 
+// Jar implements the http.CookieJar interface and conforms
+// to RFC 6265 with the one exception: Cookies from internationalized
+// domain names are not handled properly.
 //
 package cookiejar
 
+// BUG(volker) Jar does not handle internationalized domain names (IDN).
+// The Jar should (but does not) transform the domain name of the URL
+// to punycode before matching the domain attribute of a recieved cookie.
+
 import (
-	"bytes"
-	"encoding/gob"
 	"errors"
-	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -24,127 +25,70 @@ import (
 	"time"
 )
 
-var _ = fmt.Println
-
-// JarConfig determines the properties of a CookieJar.
-//
-// A Jar with a FlatStorage does not enforce a MaxCookiesPerDomain
-// constraint in an efficientway; on the other hand a non-FlatStorage
-// jar cannot handle a MaxCookiesTotal constraint efficently.
-type JarConfig struct {
-	// Maximum number of bytes for name + value of each cookie.  Cookies
-	// with a higher storage requirement are silently droped while trying
-	// to set such a cookie.
-	// A value <= 0 indicates "unlimited".
-	MaxBytesPerCookie int
-
-	// Maximum number of cookies per logical domain.  The number of cookies
-	// for a logical domain contains the cookies for this domain and for 
-	// all it's sub-domain as well (thus preventing a malicious domain of 
-	// flooding the jar by excessive amounts of cookies from sub-domains.)
-	// A value <= 0 indicates "unlimited".
-	MaxCookiesPerDomain int
-
-	// Maximum total number of cookies stored in the cookiejar.
-	// A value <= 0 indicates "unlimited".
-	MaxCookiesTotal int
-
-	// If FlatStorage is set to true, than the internal storage of
-	// the cookies will be in a flat array which is faster of only
-	// a few cookies from a handful of domains has to be handeled.
-	FlatStorage bool
-
-	// RFC 6265 forbides cookies on IP addresses, but browsers typically 
-	// do allow host-cookies on an IP address.  This browser-like behaviour
-	// can be switched on with AllowHostCookieOnIP
-	AllowHostCookieOnIP bool
-
-	// If RejectPublicSuffixes is set to true, than the cookiejar will
-	// reject domain cookies on known public suffixes.
-	// See http://www.http://publicsuffix.org
-	RejectPublicSuffixes bool
-}
-
-// MinRFC6265Config contains the minimum values as recommended by RFC 6265.
-var MinRFC6265 = JarConfig{
-	MaxBytesPerCookie:    4096,
-	MaxCookiesPerDomain:  50,
-	MaxCookiesTotal:      3000,
-	FlatStorage:          false,
-	AllowHostCookieOnIP:  false,
-	RejectPublicSuffixes: true,
-}
-
-// Unlimited describes a jar for arbitary many cookies.
-var Unlimited = JarConfig{
-	MaxBytesPerCookie:    -1,
-	MaxCookiesPerDomain:  -1,
-	MaxCookiesTotal:      -1,
-	FlatStorage:          false,
-	AllowHostCookieOnIP:  true,
-	RejectPublicSuffixes: false,
-}
-
-// Default describes a small jar, suitable for a controlled (i.e. not
-// malicious) environment with some domains and some cookies.
-var Default = JarConfig{
-	MaxBytesPerCookie:    4096,
-	MaxCookiesPerDomain:  -1,
-	MaxCookiesTotal:      100,
-	FlatStorage:          true,
-	AllowHostCookieOnIP:  false,
-	RejectPublicSuffixes: true,
-}
-
 // -------------------------------------------------------------------------
 // Jar
 
-// A Jar implements the http CookieJar interface.
+// A Jar implements the http.CookieJar interface.
 //
-// A Jar will neither store cookies in a call to SetCookies nor return cookies
+// Jar keeps all cookies in memory and does not limit the amount of stored
+// cookies.
+// Jar will neither store cookies in a call to SetCookies nor return cookies
 // from a call to Cookies if the URL is a non-HTTP URL.
-// As HTTP would require full qualified domain names in the URL anyway this
+// As HTTP would require full qualified domain names in the URL anyway, this
 // cookie jar implementation treats all domain names as beeing fully qualified
 // (absolute) even if not ending in a ".".
 type Jar struct {
-	config  JarConfig
-	storage Storage
+	// MaxBytesPerCookie is the maximum number of bytes allowed for name plus
+	// value of the cookie.  Cookies whith len(Name)+len(Value) exceeding
+	// MaxBytesPerCookie are not stored.
+	// A value <= 0 indicates unlimited storage capacity.
+	MaxBytesPerCookie int
 
-	lock sync.Mutex // the single big lock
-	once sync.Once  // used to initialise storage once
+	// HostCookiesOnIP may be set to true to allow a host cookie
+	// on an IP address.  Host cookies on an IP address are forbidden
+	// by RCF 6265 but most browsers do allow them.
+	HostCookieOnIP bool
 
-	total, empty int
+	// DomainCookiesOnPublicSuffixes may be set to true to allow domain cookies
+	// on all domains, especially on top level domains and domains
+	// browsers normaly deny domain cookies like co.uk.
+	// See http://publicsuffix.org/ for detailed information.
+	DomainCookiesOnPublicSuffixes bool
+
+	content storage // our cookies
+
+	sync.Mutex
 }
 
-// NewJar sets up a cookie jar with the given configuration.
-func NewJar(config JarConfig) *Jar {
-	if config.MaxBytesPerCookie <= 0 {
-		config.MaxBytesPerCookie = 1<<31 - 1 // "unlimited"
+// NewJar sets up a new cookie jar with MaxBytesPerCookie set to 4096.
+// The created jar won't accept host cookies for IP-addresses and won't
+// accept a domain cookie for a public suffix domain. If boxed then the
+// jar will use a boxed storage on the ETLD+1.
+func NewJar(boxedStorage bool) *Jar {
+	jar := Jar{
+		MaxBytesPerCookie:             4096,
+		HostCookieOnIP:                false,
+		DomainCookiesOnPublicSuffixes: false,
 	}
-	jar := &Jar{
-		config: config,
-	}
-	jar.allocStorage()
-	return jar
-}
-
-// allocStorage sets up a new empty storage based on the jar's config
-func (jar *Jar) allocStorage() {
-	if jar.config.FlatStorage {
-		jar.storage = NewFlatStorage(10, jar.config.MaxCookiesTotal)
+	if boxedStorage {
+		tmp := make(boxed)
+		jar.content = &tmp
 	} else {
-		fancystore := NewFancyStorage(!jar.config.RejectPublicSuffixes)
-		fancystore.maxTotal = jar.config.MaxCookiesTotal
-		fancystore.maxPerDomain = jar.config.MaxCookiesPerDomain
-		jar.storage = fancystore
+		tmp := make(flat, 0, 16)
+		jar.content = &tmp
 	}
+
+	return &jar
 }
 
-// SetCookies handles the receipt of the cookies in a reply for the given URL.
+// -------------------------------------------------------------------------
+// The methods of the http.CookieJar interface.
+
+// SetCookies updates the content of jar with the cookies recieved
+// from a request to u.
 //
-// Cookies with len(Name) + len(Value) > MaxBytesPerCookie (as during creation
-// of the jar) will be ignored silently as well as any cookie with a malformed
-// domain field.
+// Cookies with len(Name) + len(Value) > MaxBytesPerCookie will be ignored
+// silently as well as any cookie with a malformed domain field.
 func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 	if u == nil || !isHTTP(u) {
 		return // this is a strict HTTP only jar
@@ -155,84 +99,106 @@ func (jar *Jar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 		return
 	}
 	defaultpath := defaultPath(u)
-	now := time.Now()
 
-	maxBytes := jar.config.MaxBytesPerCookie
-
-	jar.lock.Lock()
-	defer jar.lock.Unlock()
+	jar.Lock()
+	defer jar.Unlock()
 
 	for _, cookie := range cookies {
-		if len(cookie.Name)+len(cookie.Value) > maxBytes {
+		if jar.MaxBytesPerCookie > 0 && len(cookie.Name)+len(cookie.Value) > jar.MaxBytesPerCookie {
 			continue
 		}
+		jar.update(host, defaultpath, cookie)
+	}
+}
 
-		action := jar.update(host, defaultpath, now, cookie)
+// SetCookies handles the receipt of the cookies in a reply for the given URL.
+func (jar *Jar) Cookies(u *url.URL) []*http.Cookie {
+	if !isHTTP(u) {
+		return nil // this is a strict HTTP only jar
+	}
 
-		switch action {
-		case createCookie:
-			jar.total++
-		case updateCookie, invalidCookie:
-			// nothing
-		case deleteCookie:
-			jar.empty++
-		default:
-			panic("Ooops")
-		}
-		// fmt.Printf("Action for cookie %s=%s: %d\n", cookie.Name, cookie.Value, action) 
+	jar.Lock()
+	defer jar.Unlock()
 
-		// make sure every cookie has a distinct creation time
-		// which can be used to sort them properly on retrieval.
-		// TODO: measure if this is faster than calling time.Now()
-		// for each cookie
+	// set up host, path and secure
+	host, err := host(u)
+	if err != nil {
+		return nil
+	}
+
+	https := isSecure(u)
+	path := u.Path
+	if path == "" {
+		path = "/"
+	}
+
+	cookies := jar.content.retrieve(https, host, path)
+	sort.Sort(sendList(cookies))
+
+	// fill into slice of http.Cookies and update LastAccess time
+	now := time.Now()
+	httpCookies := make([]*http.Cookie, len(cookies))
+	for i, cookie := range cookies {
+		httpCookies[i] = &http.Cookie{Name: cookie.Name, Value: cookie.Value}
+
+		// update last access with a strictly increasing timestamp
+		cookie.LastAccess = now
 		now = now.Add(time.Nanosecond)
 	}
 
-	jar.storage.Cleanup(jar.config.MaxCookiesTotal, jar.config.MaxCookiesPerDomain, now)
+	return httpCookies
 }
 
-// GobEncode implements the gob.GobEncoder interface.
-// Only nonexpired and persistent cookies will be serialized
-// i.e. session cookies (or expired) cookies are discarded.
-func (jar *Jar) GobEncode() ([]byte, error) {
-	all := jar.All(time.Now())
-	// remove session cookies
-	for i := 0; i < len(all); i++ {
-		if all[i].SessionCookie() {
-			all[i] = all[len(all)-1]
-			all = all[:len(all)-1]
-			i--
+// -------------------------------------------------------------------------
+// Other exported methods
+
+// All returns a copy of all non-expired cookies in the jar.
+func (jar *Jar) All() []Cookie {
+	if b, ok := jar.content.(*boxed); ok {
+		cookies := make([]Cookie, 0, 32)
+		for _, f := range *b {
+			for _, cookie := range *f {
+				if cookie.Expired() {
+					continue
+				}
+				cookies = append(cookies, *cookie)
+			}
 		}
+		return cookies
+	} else {
+		f := jar.content.(*flat)
+		cookies := make([]Cookie, 0, len(*f))
+		for _, cookie := range *f {
+			if cookie.Expired() {
+				continue
+			}
+			cookies = append(cookies, *cookie)
+		}
+		return cookies
 	}
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	encoder.Encode(all)
-	return buf.Bytes(), nil
+	panic("Not reached")
 }
 
-// GobDecode implements the gob.GobDecoder interface.
-// Only nonexpired cookies will be added to the jar.
-func (jar *Jar) GobDecode(buf []byte) error {
-	all := make([]*Cookie, 0)
-	bb := bytes.NewBuffer(buf)
-	decoder := gob.NewDecoder(bb)
-	err := decoder.Decode(&all)
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-
-	// stuff cookies into storage while rejecting expired ones
-	jar.allocStorage()
-	for _, cookie := range all {
-		if cookie.IsExpired(now) {
+// Add adds all non-expired elements of cookies to the jar.  Expired cookies
+// are silently ignored.  If a cookie is already present in the jar it will
+// be overwritten.  The LastAccess field of the given cookies are not modified.
+func (jar *Jar) Add(cookies []Cookie) {
+	for _, cookie := range cookies {
+		if cookie.Expired() {
 			continue
 		}
-		cp := jar.storage.Find(cookie.Domain, cookie.Path, cookie.Name, now)
-		*cp = *cookie
+		c := jar.content.find(cookie.Domain, cookie.Path, cookie.Name)
+		*c = cookie
 	}
+}
 
-	return nil
+// Remove deletes the cookie identified by domain, path and name from jar.
+// The function returns true if the cookie was present in the jar.
+func (jar *Jar) Remove(domain, path, name string) bool {
+	// sanitize domain
+	domain = strings.Trim(strings.ToLower(domain), ".")
+	existed := jar.content.delete(domain, path, name)
+	return existed
 }
 
 // -------------------------------------------------------------------------
@@ -249,11 +215,92 @@ const (
 	noSuchCookie
 )
 
+// host returns the (canonical) host from an URL u.
+// See RFC 6265 section 5.1.2
+// TODO: idns are not handeled at all.
+func host(u *url.URL) (host string, err error) {
+	host = strings.ToLower(u.Host)
+	if strings.HasSuffix(host, ".") {
+		// treat all domain names the same:
+		// strip trailing dot from fully qualified domain names
+		host = host[:len(host)-1]
+	}
+	if strings.Index(host, ":") != -1 {
+		host, _, err = net.SplitHostPort(host)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	host, err = punycodeToASCII(host)
+	if err != nil {
+		return "", err
+	}
+
+	return host, nil
+}
+
+// isSecure checks for https scheme in u.
+func isSecure(u *url.URL) bool {
+	return strings.ToLower(u.Scheme) == "https"
+}
+
+// isHTTP checks for http or https scheme in u.
+func isHTTP(u *url.URL) bool {
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "http" || scheme == "https"
+}
+
+// isIP check if host is formaly an IPv4 address.
+func isIP(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.String() == host
+}
+
+// This is a dummy helper function which once can do the IDN stuff.
+func punycodeToASCII(s string) (string, error) {
+	return s, nil
+}
+
+// defaultPath returns "directory" part of path from u. Empty and
+// malformed paths yield "/".
+// See RFC 6265 section 5.1.4:
+//    path in url  |  directory
+//   --------------+------------
+//    ""           |  "/"
+//    "xy/z"       |  "/"
+//    "/abc"       |  "/"
+//    "/ab/xy/km"  |  "/ab/xy"
+//    "/abc/"      |  "/abc"
+// A trailing "/" is removed during storage to faciliate the test in
+// pathMatch().
+func defaultPath(u *url.URL) string {
+	path := u.Path
+
+	// the "" and "xy/z" case
+	if len(path) == 0 || path[0] != '/' {
+		return "/"
+	}
+
+	// path starts with "/" --> i!=-1
+	i := strings.LastIndex(path, "/")
+	if i == 0 {
+		// the "/abc" case
+		return "/"
+	}
+
+	// the "/ab/xy/km" and "/abc/" case
+	return path[:i]
+}
+
 // update is the workhorse which stores, updates or deletes the recieved cookie
 // in the jar.  host is the (canonical) hostname from which the cookie was
 // recieved and defaultpath the apropriate default path ("directory" of the
-// request path. now is the current time.
-func (jar *Jar) update(host, defaultpath string, now time.Time, recieved *http.Cookie) updateAction {
+// request path.
+func (jar *Jar) update(host, defaultpath string, recieved *http.Cookie) updateAction {
 
 	// Domain, hostOnly and our storage key
 	domain, hostOnly, err := jar.domainAndType(host, recieved.Domain)
@@ -261,20 +308,22 @@ func (jar *Jar) update(host, defaultpath string, now time.Time, recieved *http.C
 		return invalidCookie
 	}
 
+	now := time.Now()
+
 	// Path
 	path := recieved.Path
 	if path == "" || path[0] != '/' {
 		path = defaultpath
 	}
 
-	// check for deletion of cookie and determine expiration time
-	// MaxAge takes precedence over Expires
+	// Check for deletion of cookie and determine expiration time:
+	// MaxAge takes precedence over Expires.
 	var deleteRequest bool
 	var expires time.Time
 	if recieved.MaxAge < 0 {
 		deleteRequest = true
 	} else if recieved.MaxAge > 0 {
-		expires = now.Add(time.Duration(recieved.MaxAge) * time.Second)
+		expires = time.Now().Add(time.Duration(recieved.MaxAge) * time.Second)
 	} else if !recieved.Expires.IsZero() {
 		if recieved.Expires.Before(now) {
 			deleteRequest = true
@@ -283,11 +332,14 @@ func (jar *Jar) update(host, defaultpath string, now time.Time, recieved *http.C
 		}
 	}
 	if deleteRequest {
-		jar.storage.Delete(domain, path, recieved.Name)
-		return deleteCookie
+		if existed := jar.content.delete(domain, path, recieved.Name); existed {
+			return deleteCookie
+		} else {
+			return noSuchCookie
+		}
 	}
 
-	cookie := jar.storage.Find(domain, path, recieved.Name, now)
+	cookie := jar.content.find(domain, path, recieved.Name)
 	if len(cookie.Name) == 0 {
 		// a new cookie
 		cookie.Domain = domain
@@ -321,9 +373,9 @@ var (
 	ErrBadDomain       = errors.New("Bad cookie domaine attribute")
 )
 
-// domainAndType determines the Cookies Domain and HostOnly attribute
-// from the host from which the cookie with the domainAttribute was
-// recieved.
+// domainAndType determines the Cookies Domain and HostOnly attribute.
+// It uses the host name the cookie was recieved from and the domain attribute
+// of the cookie.
 func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly bool, err error) {
 	if domainAttr == "" {
 		// A RFC6265 conforming Host Cookie: no domain given
@@ -332,56 +384,67 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 
 	// no hostname, but just an IP address
 	if isIP(host) {
-		if jar.config.AllowHostCookieOnIP && domainAttr == host {
-			// in non-strict mode: allow host cookie if both domain 
+		if jar.HostCookieOnIP && domainAttr == host {
+			// in non-strict mode: allow host cookie if both domain
 			// and host are IP addresses and equal. (IE/FF/Chrome)
 			return host, true, nil
 		}
-		// According to RFC 6265 domain-matching includes not beeing 
+		// According to RFC 6265 domain-matching includes not beeing
 		// an IP address.
 		return "", false, ErrNoHostname
 	}
 
 	// If valid: A Domain Cookie (with one strange exeption).
-	// We note the fact "domain cookie" as hostOnly==false and strip 
+	// We note the fact "domain cookie" as hostOnly==false and strip
 	// possible leading "." from the domain.
 	domain = domainAttr
+	// fmt.Printf("AA %s\n", domain)
 	if domain[0] == '.' {
 		domain = domain[1:]
 	}
+	// fmt.Printf("BB %s\n", domain)
+	// TODO: handle IDN
 	domain = strings.ToLower(domain) // see RFC 6265 section 5.2.3
+	// fmt.Printf("CC %s\n", domain)
+
 	if len(domain) == 0 || domain[0] == '.' {
 		// we recieved either "Domain=." or "Domain=..some.thing"
 		// both are illegal
 		return "", false, ErrMalformedDomain
 	}
+	// fmt.Printf("DD %s\n", domain)
+
 	if domain[len(domain)-1] == '.' {
-		// we recieved stufflike "Domain=www.example.com."
+		// we recieved stuff like "Domain=www.example.com."
 		// Browsers do handle such stuff (actually differently) but
 		// RFC 6265 seems to be clear here (e.g. section 4.1.2.3) in
-		// requiering a reject. 4.1.2.3 is not normative, but
+		// requiering a reject.  4.1.2.3 is not normative, but
 		// "Domain Matching" (5.1.3) and "Canonicalized Host Names"
 		// (5.1.2) are.
 		return "", false, ErrMalformedDomain
 	}
+	// fmt.Printf("EE %s\n", domain)
 
 	// Never allow Domain Cookies for TLDs.  TODO: decide on "localhost".
 	if i := strings.Index(domain, "."); i == -1 {
 		return "", false, ErrTLDDomainCookie
 	}
+	// fmt.Printf("FF %s\n", domain)
 
-	if jar.config.RejectPublicSuffixes {
+	if !jar.DomainCookiesOnPublicSuffixes {
 		// RFC 6265 section 5.3:
-		// 5. If the user agent is configured to reject "public 
+		// 5. If the user agent is configured to reject "public
 		// suffixes" and the domain-attribute is a public suffix:
-		//     If the domain-attribute is identical to the 
+		//     If the domain-attribute is identical to the
 		//     canonicalized request-host:
-		//            Let the domain-attribute be the empty string. 
+		//            Let the domain-attribute be the empty string.
 		//            [that is a host cookie]
 		//        Otherwise:
-		//            Ignore the cookie entirely and abort these 
+		//            Ignore the cookie entirely and abort these
 		//            steps.  [error]
-		if !allowCookiesOn(domain) {
+		// fmt.Printf("  allowDomainCookies(%s) = %t\n", domain, allowDomainCookies(domain))
+
+		if !allowDomainCookies(domain) {
 			// the "domain is a public suffix" case
 			if host == domainAttr {
 				return host, true, nil
@@ -389,57 +452,14 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 			return "", false, ErrIllegalPSDomain
 		}
 	}
+	// fmt.Printf("GG %s\n", domain)
 
 	// domain must domain-match host:  www.mycompany.com cannot
-	// set cookies for .ourcompetitors.com.  
+	// set cookies for .ourcompetitors.com.
 	if host != domain && !strings.HasSuffix(host, "."+domain) {
 		return "", false, ErrBadDomain
 	}
+	// fmt.Printf("HH %s\n", domain)
 
 	return domain, false, nil
-}
-
-// -------------------------------------------------------------------------
-// Retrieve Cookies
-
-// SetCookies handles the receipt of the cookies in a reply for the given URL.
-func (jar *Jar) Cookies(u *url.URL) []*http.Cookie {
-	if !isHTTP(u) {
-		return nil // this is a strict HTTP only jar
-	}
-
-	jar.lock.Lock()
-	defer jar.lock.Unlock()
-
-	// set up host, path and secure
-	host, err := host(u)
-	if err != nil {
-		return nil
-	}
-
-	secure := isSecure(u)
-	path := u.Path
-	if path == "" {
-		path = "/"
-	}
-
-	cookies := jar.storage.Retrieve(host, path, secure, time.Now())
-	sort.Sort(sendList(cookies))
-
-	// fill into slice of http.Cookies and update LastAccess time
-	now := time.Now()
-	httpCookies := make([]*http.Cookie, len(cookies))
-	for i, cookie := range cookies {
-		httpCookies[i] = &http.Cookie{Name: cookie.Name, Value: cookie.Value}
-
-		// update last access with a strictly increasing timestamp
-		cookie.LastAccess = now
-		now = now.Add(time.Nanosecond)
-	}
-
-	return httpCookies
-}
-
-func (jar *Jar) All(now time.Time) []*Cookie {
-	return jar.storage.All(now)
 }

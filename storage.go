@@ -1,54 +1,157 @@
+// Copyright 2012 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 package cookiejar
 
 import (
-	"time"
+	"fmt"
 )
 
-// UpdateAction is the return value of Storage's Update method.
-type UpdateAction int
+var _ = fmt.Printf
 
-const (
-	InvalidCookie updateAction = iota // cookies was rejected
-	CreateCookie                      // new cookie was added
-	UpdateCookie                      // existing cookie was updated
-	DeleteCookie                      // existing cookie was deleted
-	NoSuchCookie                      // requested the deletion of a non-existing cookie
-)
+// -------------------------------------------------------------------------
+// Storage
 
-// Storage is the onterface of a low-level cookie store.
-// Cookies in the storage are identified as <domain,path,name>-tripples. 
-// The Storage is supposed to do its own houskeeping but the calling site
-// is responsible for any locking, preparation of data and defaults
-// an updating of stuff like LastAccess in a cookie.
-type Storage interface {
-	// Find looks up an existing cookie.  It creates a new cookies
-	// if the requested cookie is not jet in the storage.
-	// A new/fresh cookie has an empty name while an existing cookie
-	// has a non-empty name.
-	Find(domain, path, name string, now time.Time) *Cookie
+// storage is the interface of a cookie monster.
+type storage interface {
+	retrieve(https bool, host, path string) []*Cookie
+	find(domain, path, name string) *Cookie
+	delete(domain, path, name string) bool
+}
 
-	// Delete the cookie <domain,path,name> from the storage and returns
-	// whether a cookie was deleted or not.
-	Delete(domain, path, name string) bool
+// -------------------------------------------------------------------------
+// Flat
 
-	// Retrieve fetches the unsorted list of cookies to be sent.
-	Retrieve(host, path string, secure bool, now time.Time) []*Cookie
+// flat implements a simple storage for cookies.  The actual storage
+// is an unsorted arry of pointers to the stored cookies which is searched
+// linearely any time we look for a cookie
+type flat []*Cookie
 
-	// RemoveExpired scans for expired cookies and removes them
-	// from the storage.  The number of removed cookies is returned.
-	RemoveExpired(now time.Time) int
+// retrieve fetches the unsorted list of cookies to be sent
+func (f *flat) retrieve(https bool, host, path string) []*Cookie {
+	selection := make([]*Cookie, 0)
+	expired := 0
+	for _, cookie := range *f {
+		if cookie.Expired() {
+			expired++
+		} else {
+			if cookie.shouldSend(https, host, path) {
+				selection = append(selection, cookie)
+			}
+		}
+	}
 
-	// Cleanup sanitizes the storage.  It enforces several limits:
-	//   total:     total number of stored cookies;  least used ones
-	//              are deleted if excess cookies have to be removed
-	//   perDomain: limits the number of cookies per domain/etld+1
-	// A value <= 0 indicates unlimited.
-	// The number of removed cookies is returned.
-	Cleanup(total, perDomain int, now time.Time) int
+	if expired > 10 && expired > len(*f)/5 {
+		f.cleanup()
+	}
 
-	// Empty checks if no valid (i.e. non-expired) cookie is stored.
-	Empty() bool
+	return selection
+}
 
-	// All exposes all stored and non-expired cookies.
-	All(now time.Time) []*Cookie
+// find looks up the cookie <domain,path,name> or returns a "new" cookie
+// (which might be the reuse of an existing but expired one).
+func (f *flat) find(domain, path, name string) *Cookie {
+	expiredIdx := -1
+	for i, cookie := range *f {
+		// see if the cookie is there
+		if domain == cookie.Domain &&
+			path == cookie.Path &&
+			name == cookie.Name {
+			return cookie
+		}
+
+		// track expired
+		if expiredIdx == -1 {
+			if cookie.Expired() {
+				expiredIdx = i
+			}
+		}
+	}
+
+	// reuse expired cookie
+	if expiredIdx != -1 {
+		(*f)[expiredIdx].Name = "" // clear name to indicate "new" cookie
+		return (*f)[expiredIdx]
+	}
+
+	// a genuine new cookie
+	cookie := &Cookie{}
+	*f = append(*f, cookie)
+	return cookie
+}
+
+// delete the cookie <domain,path,name> from the storage. Returns true if the
+// cookie was present in the jar.
+func (f *flat) delete(domain, path, name string) bool {
+	n := len(*f)
+	if n == 0 {
+		return false
+	}
+	for i := range *f {
+		if domain == (*f)[i].Domain &&
+			path == (*f)[i].Path &&
+			name == (*f)[i].Name {
+			if i < n-1 {
+				(*f)[i] = (*f)[n-1]
+			}
+			(*f) = (*f)[:n-1]
+			return true
+		}
+	}
+	return false
+}
+
+// cleanup removes expired cookies from f
+func (f *flat) cleanup() {
+
+}
+
+// -------------------------------------------------------------------------
+// Boxed
+
+// boxed is a storage grouped by domain.
+type boxed map[string]*flat
+
+// return the proper flat for host or nil if non present
+func (b *boxed) flat(host string) *flat {
+	box := EffectiveTLDPlusOne(host)
+	if box == "" {
+		box = host
+	}
+	return (*b)[box]
+}
+
+// retrieve fetches the unsorted list of cookies to be sent
+func (b *boxed) retrieve(https bool, host, path string) []*Cookie {
+	if flat := b.flat(host); flat != nil {
+		return flat.retrieve(https, host, path)
+	}
+	return nil
+}
+
+// find looks up the cookie <domain,path,name> or returns a "new" cookie
+// (which might be the reuse of an existing but expired one).
+func (b *boxed) find(domain, path, name string) *Cookie {
+	if flat := b.flat(domain); flat != nil {
+		return flat.find(domain, path, name)
+	}
+
+	f := make(flat, 1)
+	box := EffectiveTLDPlusOne(domain)
+	if box == "" {
+		box = domain
+	}
+	f[0] = &Cookie{}
+	(*b)[box] = &f
+	return f[0]
+}
+
+// delete the cookie <domain,path,name> from the storage. Returns true if the
+// cookie was present in the jar.
+func (b *boxed) delete(domain, path, name string) bool {
+	if flat := b.flat(domain); flat != nil {
+		return flat.delete(domain, path, name)
+	}
+	return false
 }

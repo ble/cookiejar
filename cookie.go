@@ -5,54 +5,36 @@
 package cookiejar
 
 import (
-	"container/heap"
 	"strings"
 	"time"
 )
 
-// Cookie is the internal representation of a cookie in our jar.
+// Cookie is the representation of a cookie in the cookie jar.
 type Cookie struct {
-	Name, Value  string    // name and value of cookie
-	Domain, Path string    // domain (no leading .) and path
-	Expires      time.Time // zero value indicates Session cookie
-	Secure       bool      // corresponding fields in http.Cookie
-	HostOnly     bool      // flag for Host vs. Domain cookie
-	HttpOnly     bool      // corresponding field in http.Cookie
-	Created      time.Time // used in sorting returned cookies
-	LastAccess   time.Time // for internal bookkeeping: keep recently used cookies
+	Name       string    // the name of the cookie
+	Value      string    // the value of cookie
+	Domain     string    // the domain (no leading dot)
+	Path       string    // the path
+	Expires    time.Time // zero value indicates Session cookie
+	Secure     bool      // send to https only
+	HostOnly   bool      // a Host cookie if true, else a Domain cookie
+	HttpOnly   bool      // corresponding field in http.Cookie
+	Created    time.Time // time of creation
+	LastAccess time.Time // last update or send action
 }
 
-// check if cookie Name is set
-func (c *Cookie) empty() bool {
-	return len(c.Name) == 0
-}
-func (c *Cookie) clear() {
-	c.Name, c.Value = "", ""
-}
-
-var (
-	// magic value for a clearly expired cookie
-	longAgo = time.Date(1, time.March, 2, 4, 5, 6, 0, time.UTC)
-
-	// a point somewhere so far in the future taht we will never reach it
-	farFuture = time.Date(9999, time.December, 12, 23, 59, 59, 0, time.UTC)
-)
-
-// shouldSend determines whether to send cookie via a secure request
-// to host with path. 
-func (c *Cookie) shouldSend(host, path string, secure bool, now time.Time) bool {
-	// fmt.Printf("shouldSend(%s=%s  to  %s %s %t): %t %t %t %t\n",
-	//	c.Name, c.Value, host, path, secure,
-	//	c.domainMatch(host), c.pathMatch(path), !c.isExpired(),	secureEnough(c.Secure, secure))
+// shouldSend determines whether the cookie c qualifies to be included in a
+// request to host/path. It is the callers responsibility to check if the
+// cookie is expired.
+func (c *Cookie) shouldSend(https bool, host, path string) bool {
 	return c.domainMatch(host) &&
 		c.pathMatch(path) &&
-		!c.IsExpired(now) &&
-		secureEnough(c.Secure, secure)
+		secureEnough(c.Secure, https)
 }
 
-// We send everything via https.  If its just http, the cookie must 
-// not be marked as secure.
-func secureEnough(cookieIsSecure, requestIsSecure bool) (okay bool) {
+// Every cookie is sent via https.  If the protocol is just http, then the
+// cookie must not be marked as secure.
+func secureEnough(cookieIsSecure, requestIsSecure bool) bool {
 	return requestIsSecure || !cookieIsSecure
 }
 
@@ -84,45 +66,41 @@ func (c *Cookie) domainMatch(host string) bool {
 //        character of the request-path that is not included in the cookie-
 //        path is a %x2F ("/") character.
 func (c *Cookie) pathMatch(requestPath string) bool {
-	// TODO: A better way might be to use strings.LastIndex and reuse 
-	// that for both of these conditionals.
-
-	if requestPath == c.Path {
-		// the simple case
+	if requestPath == c.Path { // the simple case
 		return true
 	}
 
 	if strings.HasPrefix(requestPath, c.Path) {
 		if c.Path[len(c.Path)-1] == '/' {
-			//  "/any/path" matches "/" and "/any/"
-			return true
+			return true // "/any/path" matches "/" and "/any/"
 		} else if requestPath[len(c.Path)] == '/' {
-			//  "/any" matches "/any/some"
-			return true
+			return true // "/any" matches "/any/some"
 		}
 	}
 
 	return false
 }
 
-// IsExpired checks if cookie c is expired.  
-func (c *Cookie) IsExpired(now time.Time) bool {
-	return !c.SessionCookie() && c.Expires.Before(now)
+// Expired checks if the cookie c is expired.
+func (c *Cookie) Expired() bool {
+	return !c.Session() && c.Expires.Before(time.Now())
 }
 
-// SessionCookie checks if a cookie c is a session cookie (i.e. has a
-// zero value for its Expires field.
-func (c *Cookie) SessionCookie() bool {
+// Session checks if a cookie c is a session cookie (i.e. has a
+// zero value for its Expires field).
+func (c *Cookie) Session() bool {
 	return c.Expires.IsZero()
 }
 
 // ------------------------------------------------------------------------
-// Sorting of cookies 
+// Sorting cookies
 
 // sendList is the list of cookies to be sent in a HTTP request.
+// sendLists can be sorted according to RFC 6265 section 5.4 point 2.
 type sendList []*Cookie
 
 func (l sendList) Len() int { return len(l) }
+
 func (l sendList) Less(i, j int) bool {
 	// RFC 6265 says (section 5.4 point 2) we should sort our cookies
 	// like:
@@ -134,46 +112,5 @@ func (l sendList) Less(i, j int) bool {
 	}
 	return in > jn
 }
+
 func (l sendList) Swap(i, j int) { l[i], l[j] = l[j], l[i] }
-
-// -------------------------------------------------------------------------
-// Finding the n least used cookies
-
-// cookieplus is a pointer to a cookie plus additional data
-type heapitem struct {
-	cookie *Cookie
-	data   interface{}
-}
-
-type cookieheap []heapitem
-
-func (h cookieheap) Len() int            { return len(h) }
-func (h cookieheap) Less(i, j int) bool  { return h[i].cookie.LastAccess.After(h[j].cookie.LastAccess) }
-func (h cookieheap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *cookieheap) Push(x interface{}) { *h = append(*h, x.(heapitem)) }
-func (h *cookieheap) Pop() interface{} {
-	x := (*h)[len(*h)-1]
-	*h = (*h)[:len(*h)-1]
-	return x
-}
-
-// leastUsed keeps the n least used cookies which where insert'ed
-// with the additional data in cookies.
-type leastUsed struct {
-	n    int
-	elem cookieheap
-}
-
-func newLeastUsed(n int) *leastUsed {
-	return &leastUsed{n: n, elem: make(cookieheap, 0, n)}
-}
-
-func (lu *leastUsed) insert(cookie *Cookie, data interface{}) {
-	heap.Push(&lu.elem, heapitem{cookie, data})
-	if len(lu.elem) > lu.n {
-		heap.Pop(&lu.elem)
-	}
-	return
-}
-
-func (lu *leastUsed) elements() []heapitem { return lu.elem }

@@ -4,389 +4,214 @@
 
 package cookiejar
 
+// Tests for the exported methods of Jar.
+
 import (
-	// "fmt"
+	"fmt"
 	"net/http"
 	"net/url"
-	// "reflect"
-	"strconv"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 )
 
-func (a updateAction) String() string {
-	switch a {
-	case invalidCookie:
-		return "invalidCookie"
-	case deleteCookie:
-		return "deleteCookie"
-	case createCookie:
-		return "createCookie"
-	case updateCookie:
-		return "updateCookie"
-	case noSuchCookie:
-		return "noSuchCookie"
+// -------------------------------------------------------------------------
+// Helper functions and methods to simplify testing
+
+// list yields the (non-expired) cookies of jar in a simple
+// and deterministic format like "name1=value1 name2=value2":
+// sorted alphabetical.
+func (jar *Jar) list() string {
+	all := jar.All()
+	elements := make([]string, len(all))
+	for i, cookie := range all {
+		elements[i] = cookie.Name + "=" + cookie.Value
 	}
-	return "???"
+	sort.Strings(elements)
+	return strings.Join(elements, " ")
 }
 
-var defaultPathTests = []struct{ path, dir string }{
-	{"", "/"},
-	{"xy", "/"},
-	{"xy/z", "/"},
-	{"/", "/"},
-	{"/abc", "/"},
-	{"/ab/xy", "/ab"},
-	{"/ab/xy/z", "/ab/xy"},
-	{"/ab/", "/ab"},
-	{"/ab/xy/z/", "/ab/xy/z"},
-}
+// difference compares recieved to expected (both in the above
+// simple format) and returns any found differences in human
+// readable format.
+func difference(recieved, expected string) string {
+	got := list2map(recieved)
+	want := list2map(expected)
 
-func TestDefaultPath(t *testing.T) {
-	for _, test := range defaultPathTests {
-		u := url.URL{Path: test.path}
-		got := defaultPath(&u)
-		if got != test.dir {
-			t.Errorf("Test %s want %s got %s", test.path, got, test.dir)
+	excess := ""
+	for k, _ := range got {
+		if _, ok := want[k]; !ok {
+			excess += " " + k
 		}
 	}
-}
+	if excess != "" {
+		excess = "Excess:" + excess + "; "
+	}
 
-func TestPathMatch(t *testing.T) {
-	for _, tt := range []struct {
-		cookiePath, urlPath string
-		match               bool
-	}{
-		{"/", "/", true},
-		{"/x", "/x", true},
-		{"/", "/abc", true},
-		{"/abc", "/foo", false},
-		{"/abc", "/foo/", false},
-		{"/abc", "/abcd", false},
-		{"/abc", "/abc/d", true},
-		{"/path", "/", false},
-		{"/path", "/path", true},
-		{"/path", "/path/x", true},
-	} {
-		c := &Cookie{Path: tt.cookiePath}
-		if c.pathMatch(tt.urlPath) != tt.match {
-			t.Errorf("want %t for %s ~ %s", tt.match, tt.cookiePath, tt.urlPath)
+	missing := ""
+	for k, _ := range want {
+		if _, ok := got[k]; !ok {
+			missing += " " + k
 		}
 	}
+	if missing != "" {
+		missing = "Missing:" + missing
+	}
+
+	return excess + missing
 }
 
-var hostTests = []struct {
-	in, expected string
-}{
-	{"www.example.com", "www.example.com"},
-	{"www.EXAMPLE.com", "www.example.com"},
-	{"wWw.eXAmple.CoM", "www.example.com"},
-	{"www.example.com:80", "www.example.com"},
-	{"12.34.56.78:8080", "12.34.56.78"},
+func list2map(list string) map[string]struct{} {
+	m := make(map[string]struct{})
+	for _, c := range strings.Fields(list) {
+		m[c] = struct{}{}
+	}
+	return m
 }
 
-func TestHost(t *testing.T) {
-	for _, test := range hostTests {
-		out, _ := host(&url.URL{Host: test.in})
-		if out != test.expected {
-			t.Errorf("Test %s got %s want %s", test.in, out, test.expected)
+// stringRep transforms a http.Cookie slice to our
+// "a=1 c=3" format for cookie checking.
+func stringRep(cookies []*http.Cookie) string {
+	s := ""
+	for i, c := range cookies {
+		if i > 0 {
+			s += " "
 		}
+		s += c.Name + "=" + c.Value
 	}
+	return s
 }
 
-var isIPTests = []struct {
-	host string
-	isIP bool
-}{
-	{"example.com", false},
-	{"127.0.0.1", true},
-	{"1.1.1.300", false},
-	{"www.foo.bar.net", false},
-	{"123.foo.bar.net", false},
-	// TODO: IPv6 test
+// parseCookie turns s (format of Set-Cookie header) into a http.Cookie.
+func parseCookie(s string) *http.Cookie {
+	cookies := (&http.Response{Header: http.Header{"Set-Cookie": {s}}}).Cookies()
+	if len(cookies) != 1 {
+		panic(fmt.Sprintf("Wrong cookie line %q: %#v", s, cookies))
+	}
+	return cookies[0]
 }
 
-func TestIsIP(t *testing.T) {
-	for _, test := range isIPTests {
-		if isIP(test.host) != test.isIP {
-			t.Errorf("Test %s want %t", test.host, test.isIP)
-		}
-	}
+// expiresIn creates an expires attribute delta seconds from now.
+func expiresIn(delta int) string {
+	t := time.Now().Add(time.Duration(delta) * time.Second)
+	return "expires=" + t.Format(time.RFC1123)
 }
 
-var domainAndTypeTests = []struct {
-	inHost, inCookieDomain string
-	outDomain              string
-	outHostOnly            bool
-}{
-	{"www.example.com", "", "www.example.com", true},
-	{"127.www.0.0.1", "127.0.0.1", "", false},
-	{"www.example.com", ".", "", false},
-	{"www.example.com", "..", "", false},
-	{"www.example.com", "com", "", false},
-	{"www.example.com", ".com", "", false},
-	{"www.example.com", "example.com", "example.com", false},
-	{"www.example.com", ".example.com", "example.com", false},
-	{"www.example.com", "www.example.com", "www.example.com", false},  // Unsure abou this and
-	{"www.example.com", ".www.example.com", "www.example.com", false}, // this one.
-	{"foo.sso.example.com", "sso.example.com", "sso.example.com", false},
+// parse s to an URL and panic on error
+func URL(s string) *url.URL {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		panic(fmt.Sprintf("Unable to parse URL %s.", s))
+	}
+	return u
 }
 
-func TestDomainAndType(t *testing.T) {
-	jar := Jar{}
-	for _, test := range domainAndTypeTests {
-		d, h, _ := jar.domainAndType(test.inHost, test.inCookieDomain)
-		if d != test.outDomain || h != test.outHostOnly {
-			t.Errorf("Test %s/%s want %s/%t got %s/%t",
-				test.inHost, test.inCookieDomain,
-				test.outDomain, test.outHostOnly, d, h)
-		}
-	}
-}
-
-func TestStrictnessWithIP(t *testing.T) {
-	// No (host cookies) for IP addresses in strict mode
-	jar := NewJar(Default)
-	d, h, _ := jar.domainAndType("127.0.0.1", "127.0.0.1")
-	if d != "" {
-		t.Errorf("Got %s", d)
+func TestTestHelpers(t *testing.T) {
+	if difference("a=1 b=2 c=3", "c=3 a=1 b=2") != "" {
+		t.Errorf("difference not order invariant")
 	}
 
-	// Allow host cookies for IP addresses like IE, FF and Chrome
-	// if non-strict jar.
-	cfg := Default
-	cfg.AllowHostCookieOnIP = true
-	jar = NewJar(cfg)
-	d, h, _ = jar.domainAndType("127.0.0.1", "127.0.0.1")
-	if d != "127.0.0.1" || h != true {
-		t.Errorf("Got %s and %t", d, h)
+	jar := NewJar(false)
+	jar.Add([]Cookie{
+		Cookie{Name: "a", Value: "1"},
+		Cookie{Name: "b", Value: "2"},
+		Cookie{Name: "c", Value: "3"}})
+
+	diff := difference(jar.list(), "b=2 c=3 d=4")
+	if diff != "Excess: a=1; Missing: d=4" {
+		t.Errorf("Got diff=%q", diff)
 	}
-
-	runJarTest(t, jar, jarTest{"http://1.2.3.4/weee",
-		"TestIpAddress domain cookies for exact match",
-		[]string{"b=2; domain=1.2.3.4"},
-		[]expect{{"http://1.2.3.4/weee", "b=2"}},
-	})
-
-	// Totaly unsure about this one:
-	// RFC 6265 forbidds cookies on IP addresses, in non strict mode
-	// we allow them if IP-address == Domain attribute (which
-	// it is _not_ here due to leading dot).  But RFC 6265 request
-	// striping of a leading dot during parsing of cookie which
-	// would indicate that we would see 1.2.3.4 without dot when
-	// deciding what to do, so we migt in non-strict mode....
-	/*
-		runJarTest(t, jar, jarTest{"http://1.2.3.4/weee",
-			"TestIpAddress but no domain cookies",
-			[]string{"b=2; domain=.1.2.3.4", "c=3; domain=.3.4"}, 
-			[]expect{{"http://1.2.3.4/weee", ""}},
-		})
-	*/
 }
 
 // -------------------------------------------------------------------------
-// Update
+// jarTest: test SetCookies and Cookies methods
 
-type updateTest struct {
-	// elements of url
-	uscheme, uhost, upath string // what name suggest
-
-	// elements of cookie
-	cname, cvalue  string // what the name suggests
-	cpath, cdomain string // what the name suggests
-	cexp           int    // cexp==0: no Expires; else delta to now in sec
-	cmaxage        int    // what name suggests
-	csecure, chttp bool   // what name suggests
-
-	// expected results
-	eaction        updateAction
-	edomain, epath string
-	eexp           int // eexp==-999 session cookie; else delta to now in sec
-	ehostonly      bool
+// jarTest encapsulatest the following actions on a jar:
+//   1.  Perform SetCookies() with fromURL and the cookies from setCookies.
+//   2.  Check that the content of the jar matches content.
+//   3.  For each query in test: Check that Cookies() with toURL yields the
+//       cookies in expected.
+type jarTest struct {
+	description string   // the description of what this test is supposed to test
+	fromURL     string   // the full URL of the request to which Set-Cookie headers where recieved
+	setCookies  []string // all the cookies recieved from fromURL in simplyfied form (see above)
+	content     string   // the whole content of the jar
+	tests       []query  // several testhat to expect, again as a cookie header line
 }
 
-// cookie names (cname) must be unique to allow present() to find them!
-var updateTests = []updateTest{
-	// cookies which get strored
-	{"http", "www.example.org", "",
-		"first", "firstV", "", "", 0, 0, false, false,
-		createCookie, "www.example.org", "/", -999, true},
-	{"http", "www.example.org", "/some/path/here.html",
-		"second", "secondV", "", "", 0, 0, false, false,
-		createCookie, "www.example.org", "/some/path", -999, true},
-	{"http", "www.example.org", "/some/path/here.html",
-		"third", "thirdV", "/other/path", "", 0, 0, false, false,
-		createCookie, "www.example.org", "/other/path", -999, true},
-	{"http", "www.example.org", "/some/path/here.html",
-		"forth", "fourthV", "badpath", "", 600, 0, false, false,
-		createCookie, "www.example.org", "/some/path", 600, true},
-	{"http", "www.test.net", "/foo/bar/",
-		"fifth", "fifthV", "", ".test.net", 200, 100, false, false,
-		createCookie, "test.net", "/foo/bar", 100, false},
-	{"http", "bar.www.test.net", "/xyz",
-		"sixth", "sixthV", "/foo/bar", "www.test.net", 200, 100, false, false,
-		createCookie, "www.test.net", "/foo/bar", 100, false},
-
-	// cookies which are rejected
-	{"http", "www.example.org", "",
-		"rej1", "rej1V", "", ".org", 0, 0, false, false,
-		invalidCookie, "", "", 0, false},
-	{"http", "www.example.org", "",
-		"rej2", "rej2V", "", "wexample.org", 0, 0, false, false,
-		invalidCookie, "", "", 0, false},
-	{"http", "www.example.org", "",
-		"rej3", "rej3V", "", "foo.example.org", 0, 0, false, false,
-		invalidCookie, "", "", 0, false},
-
-	// cookies which are deleted
-	{"http", "www.example.org", "",
-		"first", "firstV", "", "", -123, 0, false, false,
-		deleteCookie, "", "", 0, false},
-	{"http", "www.example.org", "",
-		"first", "firstV", "", "", -123, 0, false, false,
-		deleteCookie, "", "", 0, false},
-	{"http", "www.example.org", "",
-		"first", "firstV", "", "", 0, -123, false, false,
-		deleteCookie, "", "", 0, false},
-	{"http", "www.example.org", "/some/path/here.html",
-		"second", "secondV", "", "", 234, -123, false, false,
-		deleteCookie, "", "", 0, false},
-	{"http", "www.example.org", "/some/path/here.html",
-		"second", "secondV", "", "", 234, -123, false, false,
-		deleteCookie, "", "", 0, false},
-	{"http", "www.example.org", "/some/path/here.html",
-		"second", "secondV", "", "", -234, 0, false, false,
-		deleteCookie, "", "", 0, false},
-	{"http", "www.example.org", "/some/path/here.html",
-		"second", "secondV", "", "", -234, -123, false, false,
-		deleteCookie, "", "", 0, false},
-	{"http", "www.example.org", "/some/path/here.html",
-		"second", "secondV", "", "", 0, -123, false, false,
-		deleteCookie, "", "", 0, false},
+// query contains one test of the cookies returned to Cookies().
+type query struct {
+	toURL    string // the URL in the Cookies() call
+	expected string // the expected list of cookies (order matters)
 }
 
-func present(jar *Jar, tt updateTest, now time.Time, t *testing.T) bool {
-	// blunt search over everything
-	for _, c := range jar.All(now) {
-		if c.Name != tt.cname || c.Expires == longAgo {
-			continue
-		}
+// run performs the actions and test of test on jar.
+func (test jarTest) run(t *testing.T, jar *Jar) {
+	u := URL(test.fromURL)
 
-		if c.Value != tt.cvalue {
-			t.Errorf("Cookie %s got value %s want %s", tt.cname, c.Value, tt.cvalue)
-		}
-		if c.Domain != tt.edomain {
-			t.Errorf("Cookie %s got domain %s want %s", tt.cname, c.Domain, tt.edomain)
-		}
-		if c.HostOnly != tt.ehostonly {
-			t.Errorf("Cookie %s got hostonly %t want %t", tt.cname, c.HostOnly, tt.ehostonly)
-		}
-		if c.Path != tt.epath {
-			t.Errorf("Cookie %s got path %s want %s", tt.cname, c.Path, tt.epath)
-		}
-		if tt.eexp == -999 && !c.Expires.IsZero() {
-			t.Errorf("Cookie %s got persisten cookie with ttl %d s want session cookie",
-				tt.cname, int(c.Expires.Sub(now).Seconds()))
-		}
-		if tt.eexp != -999 && now.Add(time.Duration(tt.eexp)*time.Second) != c.Expires {
-			t.Errorf("Cookie %s got persistent cookie with ttl %d s want ttl of %d",
-				tt.cname, int(c.Expires.Sub(now).Seconds()), tt.eexp)
-
-		}
-		return true
+	// populate jar with cookies
+	setcookies := make([]*http.Cookie, len(test.setCookies))
+	for i, cs := range test.setCookies {
+		setcookies[i] = parseCookie(cs)
 	}
-	return false
-}
+	jar.SetCookies(u, setcookies)
 
-/************************************************************
-func TestUpdate(t *testing.T) {
-	jar := &Jar{}
-	jar.storage = make(map[string]*flatJar)
+	// make sure jar content matches our expectations
+	if jar.list() != test.content {
+		t.Errorf("Test %q: Wrong content.\nWant %q, got %q.",
+			test.description, test.content, jar.list())
+	}
 
-	now := time.Now()
-	for _, tt := range updateTests {
-		u := &url.URL{Scheme: tt.uscheme, Host: tt.uhost, Path: tt.upath}
-
-		var exp time.Time
-		if tt.cexp != 0 {
-			exp = now
-			exp = exp.Add(time.Second * time.Duration(tt.cexp))
-		}
-		if tt.cmaxage != 0 {
-			exp = now
-			exp = exp.Add(time.Second * time.Duration(tt.cmaxage))
-		}
-		cookie := &http.Cookie{Name: tt.cname, Value: tt.cvalue,
-			Path: tt.cpath, Domain: tt.cdomain, Expires: exp,
-			MaxAge: tt.cmaxage, Secure: tt.csecure, HttpOnly: tt.chttp}
-
-		defaultPath := defaultPath(u)
-
-		action := jar.update("", nil, tt.uhost, defaultPath, now, cookie)
-
-		if action != tt.eaction {
-			t.Errorf("Test cookie named %s got action %s want %s",
-				tt.cname, action, tt.eaction)
-		} else {
-			switch tt.eaction {
-			case createCookie, updateCookie:
-				if !present(jar, tt, now, t) {
-					t.Errorf("Test cookie named %s not found after store", tt.cname)
-				}
-			case deleteCookie:
-				if present(jar, tt, now, t) {
-					t.Errorf("Test cookie named %s found after delete", tt.cname)
-				}
+	// test different calls to Cookies()
+	for i, query := range test.tests {
+		u := URL(query.toURL)
+		cookies := jar.Cookies(u)
+		recieved := stringRep(cookies)
+		if recieved != query.expected {
+			diff := difference(recieved, query.expected)
+			if diff == "" {
+				t.Errorf("Test %q, #%d: Wrong sorting.\nWant %q, got %q.",
+					test.description, i, query.expected, recieved)
+			} else {
+				t.Errorf("Test %q, #%d: Wrong cookies.\nWant %q, got %q."+
+					"\n Difference: %s",
+					test.description, i, query.expected, recieved,
+					diff)
 			}
 		}
-
 	}
 }
-************************************************************/
 
 // -------------------------------------------------------------------------
-// The Big Jar Test
+// Basic test on Jar.
 
-// all the cookies we expect to get back on a jar.Cookies(toUrl)
-type expect struct {
-	toUrl   string // url to send to
-	cookies string // the serialization of the cookies
-}
-
-// The input to a jar.SetCookie(requestUrl, setCookies) and our expectation
-// on what to get back directly afterwards.
-type jarTest struct {
-	requestUrl  string   // the full url of the request to which Set-Cookie headers where recieved
-	description string   // the description of what the test is good for
-	setCookies  []string // all the cookies we set as simplified (see below) cookie header lines
-	expected    []expect // what to expect, again as a cookie header line
-}
-
-// The following tests must be perfomed on an empty jar each.
-var singleJarTests = []jarTest{
-	{"http://www.host.test/", "Simple Test, Base Test",
+// basicJarTest contains test for the basic features of a cookie jar.
+var basicJarTests = []jarTest{
+	{"Retrieval of a plain cookie.",
+		"http://www.host.test/",
 		[]string{"A=a"},
-		[]expect{
+		"A=a",
+		[]query{
 			{"http://www.host.test", "A=a"},
 			{"http://www.host.test/", "A=a"},
 			{"http://www.host.test/some/path", "A=a"},
 			{"https://www.host.test", "A=a"},
 			{"https://www.host.test/", "A=a"},
 			{"https://www.host.test/some/path", "A=a"},
-			/*  we're a http only jar ...
-			{"ftp://www.host.test", "A=a"},
-			{"ftp://www.host.test/", "A=a"},
-			{"ftp://www.host.test/some/path", "A=a"},
-			*/
+			{"ftp://www.host.test", ""},
+			{"ftp://www.host.test/", ""},
+			{"ftp://www.host.test/some/path", ""},
 			{"http://www.other.org", ""},
 			{"http://sibling.host.test", ""},
 			{"http://deep.www.host.test", ""},
 		},
 	},
-	{"http://www.host.test/", "HttpOnly Cookies",
+	{"HttpOnly is a noop as our jar is http only.",
+		"http://www.host.test/",
 		[]string{"A=a; httponly"},
-		[]expect{
+		"A=a",
+		[]query{
 			{"http://www.host.test", "A=a"},
 			{"http://www.host.test/", "A=a"},
 			{"http://www.host.test/some/path", "A=a"},
@@ -401,26 +226,11 @@ var singleJarTests = []jarTest{
 			{"http://deep.www.host.test", ""},
 		},
 	},
-	{"http://www.host.test/", "Secure + HttpOnly cookie",
-		[]string{"A=a; secure; httponly"},
-		[]expect{
-			{"http://www.host.test", ""},
-			{"http://www.host.test/", ""},
-			{"http://www.host.test/some/path", ""},
-			{"https://www.host.test", "A=a"},
-			{"https://www.host.test/", "A=a"},
-			{"https://www.host.test/some/path", "A=a"},
-			{"ftp://www.host.test", ""},
-			{"ftp://www.host.test/", ""},
-			{"ftp://www.host.test/some/path", ""},
-			{"http://www.other.org", ""},
-			{"http://sibling.host.test", ""},
-			{"http://deep.www.host.test", ""},
-		},
-	},
-	{"http://www.host.test/", "Secure cookie",
+	{"Secure cookies are not returned to http.",
+		"http://www.host.test/",
 		[]string{"A=a; secure"},
-		[]expect{
+		"A=a",
+		[]query{
 			{"http://www.host.test", ""},
 			{"http://www.host.test/", ""},
 			{"http://www.host.test/some/path", ""},
@@ -435,9 +245,31 @@ var singleJarTests = []jarTest{
 			{"http://deep.www.host.test", ""},
 		},
 	},
-	{"http://www.host.test/", "Explicit path",
+	{"HttpOnly is a noop for secure cookies too.",
+		"http://www.host.test/",
+		[]string{"A=a; secure; httponly"},
+		"A=a",
+		[]query{
+			{"http://www.host.test", ""},
+			{"http://www.host.test/", ""},
+			{"http://www.host.test/some/path", ""},
+			{"https://www.host.test", "A=a"},
+			{"https://www.host.test/", "A=a"},
+			{"https://www.host.test/some/path", "A=a"},
+			{"ftp://www.host.test", ""},
+			{"ftps://www.host.test", ""},
+			{"ftp://www.host.test/", ""},
+			{"ftp://www.host.test/some/path", ""},
+			{"http://www.other.org", ""},
+			{"http://sibling.host.test", ""},
+			{"http://deep.www.host.test", ""},
+		},
+	},
+	{"Cookie with explicit path.",
+		"http://www.host.test/",
 		[]string{"A=a; path=/some/path"},
-		[]expect{
+		"A=a",
+		[]query{
 			{"http://www.host.test", ""},
 			{"http://www.host.test/", ""},
 			{"http://www.host.test/some", ""},
@@ -448,9 +280,11 @@ var singleJarTests = []jarTest{
 			{"http://www.host.test/some/path/foo/", "A=a"},
 		},
 	},
-	{"http://www.host.test/some/path/", "Implicit path v1: path is directoy",
+	{"Cookie with implicit path, variant a: path is directoy.",
+		"http://www.host.test/some/path/",
 		[]string{"A=a"},
-		[]expect{
+		"A=a",
+		[]query{
 			{"http://www.host.test", ""},
 			{"http://www.host.test/", ""},
 			{"http://www.host.test/some", ""},
@@ -461,9 +295,11 @@ var singleJarTests = []jarTest{
 			{"http://www.host.test/some/path/foo/", "A=a"},
 		},
 	},
-	{"http://www.host.test/some/path/index.html", "Implicit path v2: path not directory",
+	{"Cookie with implicit path, variant b:: path is not directory",
+		"http://www.host.test/some/path/index.html",
 		[]string{"A=a"},
-		[]expect{
+		"A=a",
+		[]query{
 			{"http://www.host.test", ""},
 			{"http://www.host.test/", ""},
 			{"http://www.host.test/some", ""},
@@ -474,22 +310,50 @@ var singleJarTests = []jarTest{
 			{"http://www.host.test/some/path/foo/", "A=a"},
 		},
 	},
-	{"http://www.host.test", "Implicit path v3: no path in url at all",
+	{"Cookie with implicit path, version c: no path in url at all.",
+		"http://www.host.test",
 		[]string{"A=a"},
-		[]expect{
+		"A=a",
+		[]query{
 			{"http://www.host.test", "A=a"},
 			{"http://www.host.test/", "A=a"},
 			{"http://www.host.test/some/path", "A=a"},
 		},
 	},
-	{"http://www.host.test/", "Sort returned cookies by path length",
-		[]string{"A=a; path=/foo/bar", "B=b; path=/foo/bar/baz/qux",
-			"C=c; path=/foo/bar/baz", "D=d; path=/foo"},
-		[]expect{
-			{"http://www.host.test/foo/bar/baz/qux", "B=b; C=c; A=a; D=d"},
+	{"Returned cookies are sorted by path length.",
+		"http://www.host.test/",
+		[]string{
+			"A=a; path=/foo/bar",
+			"B=b; path=/foo/bar/baz/qux",
+			"C=c; path=/foo/bar/baz",
+			"D=d; path=/foo"},
+		"A=a B=b C=c D=d",
+		[]query{
+			{"http://www.host.test/foo/bar/baz/qux", "B=b C=c A=a D=d"},
+			{"http://www.host.test/foo/bar/baz/", "C=c A=a D=d"},
+			{"http://www.host.test/foo/bar", "A=a D=d"},
 		},
 	},
-	{"http://www.test.org/", "Same name, different cookie",
+	{"Returned cookies are sorted by creation time if path lengths are the same.",
+		"http://www.host.test/",
+		[]string{
+			"A=a; path=/foo/bar",
+			"X=x; path=/foo/bar",
+			"Y=y; path=/foo/bar/baz/qux",
+			"B=b; path=/foo/bar/baz/qux",
+			"C=c; path=/foo/bar/baz",
+			"W=w; path=/foo/bar/baz",
+			"Z=z; path=/foo",
+			"D=d; path=/foo"},
+		"A=a B=b C=c D=d W=w X=x Y=y Z=z",
+		[]query{
+			{"http://www.host.test/foo/bar/baz/qux", "Y=y B=b C=c W=w A=a X=x Z=z D=d"},
+			{"http://www.host.test/foo/bar/baz/", "C=c W=w A=a X=x Z=z D=d"},
+			{"http://www.host.test/foo/bar", "A=a X=x Z=z D=d"},
+		},
+	},
+	{"Several cookies with the same name but different paths and/or domain are sorted on path length and creation time",
+		"http://www.test.org/",
 		[]string{"A=1; path=/",
 			"A=2; path=/path",
 			"A=3; path=/quux",
@@ -498,41 +362,307 @@ var singleJarTests = []jarTest{
 			"A=6; domain=.test.org; path=/quux",
 			"A=7; domain=.test.org; path=/path/foo",
 		},
-		[]expect{
-			{"http://www.test.org/path", "A=2; A=5; A=1"},
-			{"http://www.test.org/path/foo", "A=4; A=7; A=2; A=5; A=1"},
+		"A=1 A=2 A=3 A=4 A=5 A=6 A=7",
+		[]query{
+			{"http://www.test.org/path", "A=2 A=5 A=1"},
+			{"http://www.test.org/path/foo", "A=4 A=7 A=2 A=5 A=1"},
 		},
 	},
-	//
-	// Test from http://src.chromium.org/viewvc/chrome/trunk/src/net/base/cookie_monster_unittest.cc
-	// now http://src.chromium.org/viewvc/chrome/trunk/src/net/cookies/cookie_store_unittest.h
-	// 
-	{"http://www.google.com/", "DomainWithTrailingDotTest",
-		[]string{"a=1; domain=.www.google.com.", "a=1; domain=.www.google.com.."},
-		[]expect{
+}
+
+func TestBasicFeatures(t *testing.T) {
+	for _, test := range basicJarTests {
+		jar := NewJar(false)
+		test.run(t, jar)
+	}
+	for _, test := range basicJarTests {
+		jar := NewJar(true)
+		test.run(t, jar)
+	}
+}
+
+var updateAndDeleteTests = []jarTest{
+	{"Set some initial cookies",
+		"http://www.example.com",
+		[]string{"a=1", "b=2; secure", "c=3; httponly", "d=4; secure; httponly"},
+		"a=1 b=2 c=3 d=4",
+		[]query{
+			{"http://www.example.com", "a=1 c=3"},
+			{"https://www.example.com", "a=1 b=2 c=3 d=4"},
+		},
+	},
+	{"We can update all of them to new value via http",
+		"http://www.example.com",
+		[]string{"a=w", "b=x; secure", "c=y; httponly", "d=z; secure; httponly"},
+		"a=w b=x c=y d=z",
+		[]query{
+			{"http://www.example.com", "a=w c=y"},
+			{"https://www.example.com", "a=w b=x c=y d=z"},
+		},
+	},
+	{"We can clear a Secure flag from a http request",
+		"http://www.example.com/",
+		[]string{"b=xx", "d=zz; httponly"},
+		"a=w b=xx c=y d=zz",
+		[]query{{"http://www.example.com", "a=w b=xx c=y d=zz"}},
+	},
+	{"We can delete all of them",
+		"http://www.example.com/",
+		[]string{"a=1; max-Age=-1", //  delete via MaxAge
+			"b=2; " + expiresIn(-10),             // delete via Expires
+			"c=2; max-age=-1; " + expiresIn(-10), // delete via both
+			"d=4; max-age=-1; " + expiresIn(10)}, // maxAge takes precedence
+		"",
+		[]query{{"http://www.example.com", ""}},
+	},
+}
+
+func TestUpdateAndDelete(t *testing.T) {
+	jar := NewJar(false)
+	for _, test := range updateAndDeleteTests {
+		test.run(t, jar)
+	}
+	jar = NewJar(true)
+	for _, test := range updateAndDeleteTests {
+		test.run(t, jar)
+	}
+}
+
+var cookieDeletionTests = []jarTest{
+	{"TestCookieDeletion: Fill jar part 1.",
+		"http://www.host.test",
+		[]string{
+			"A=1",
+			"A=2; path=/foo",
+			"A=3; domain=.host.test",
+			"A=4; path=/foo; domain=.host.test"},
+		"A=1 A=2 A=3 A=4",
+		[]query{{"http://www.host.test/foo", "A=2 A=4 A=1 A=3"}},
+	},
+	{"TestCookieDeletion: Fill jar part 2.",
+		"http://www.google.com",
+		[]string{
+			"A=6",
+			"A=7; path=/foo",
+			"A=8; domain=.google.com",
+			"A=9; path=/foo; domain=.google.com"},
+		"A=1 A=2 A=3 A=4 A=6 A=7 A=8 A=9",
+		[]query{
+			{"http://www.host.test/foo", "A=2 A=4 A=1 A=3"},
+			{"http://www.google.com/foo", "A=7 A=9 A=6 A=8"},
+		},
+	},
+	{"TestCookieDeletion: Delete A7",
+		"http://www.google.com",
+		[]string{"A=; path=/foo; max-age=-1"},
+		"A=1 A=2 A=3 A=4 A=6 A=8 A=9",
+		[]query{
+			{"http://www.host.test/foo", "A=2 A=4 A=1 A=3"},
+			{"http://www.google.com/foo", "A=9 A=6 A=8"},
+		},
+	},
+	{"TestCookieDeletion: Delete A4",
+		"http://www.host.test",
+		[]string{"A=; path=/foo; domain=host.test; max-age=-1"},
+		"A=1 A=2 A=3 A=6 A=8 A=9",
+		[]query{
+			{"http://www.host.test/foo", "A=2 A=1 A=3"},
+			{"http://www.google.com/foo", "A=9 A=6 A=8"},
+		},
+	},
+	{"TestCookieDeletion: Delete A6",
+		"http://www.google.com",
+		[]string{"A=; max-age=-1"},
+		"A=1 A=2 A=3 A=8 A=9",
+		[]query{
+			{"http://www.host.test/foo", "A=2 A=1 A=3"},
+			{"http://www.google.com/foo", "A=9 A=8"},
+		},
+	},
+	{"TestCookieDeletion: Delete A3",
+		"http://www.host.test",
+		[]string{"A=; domain=host.test; max-age=-1"},
+		"A=1 A=2 A=8 A=9",
+		[]query{
+			{"http://www.host.test/foo", "A=2 A=1"},
+			{"http://www.google.com/foo", "A=9 A=8"},
+		},
+	},
+	{"TestCookieDeletion: no cross-domain delete",
+		"http://www.host.test",
+		[]string{"A=; domain=google.com; max-age=-1", "A=; path=/foo; domain=google.com; max-age=-1"},
+		"A=1 A=2 A=8 A=9",
+		[]query{
+			{"http://www.host.test/foo", "A=2 A=1"},
+			{"http://www.google.com/foo", "A=9 A=8"},
+		},
+	},
+	{"TestCookieDeletion: Delete A8 and A9",
+		"http://www.google.com",
+		[]string{"A=; domain=google.com; max-age=-1", "A=; path=/foo; domain=google.com; max-age=-1"},
+		"A=1 A=2",
+		[]query{
+			{"http://www.host.test/foo", "A=2 A=1"},
+			{"http://www.google.com/foo", ""},
+		},
+	},
+}
+
+func TestCookieDeletion(t *testing.T) {
+	jar := NewJar(false)
+	for _, test := range cookieDeletionTests {
+		test.run(t, jar)
+	}
+	jar = NewJar(true)
+	for _, test := range cookieDeletionTests {
+		test.run(t, jar)
+	}
+}
+
+func TestExpiration(t *testing.T) {
+	for _, b := range []bool{true, false} {
+		jar := NewJar(b)
+		jarTest{
+			"Fill jar",
+			"http://www.host.test",
+			[]string{
+				"a=1",
+				"b=2; max-age=1",
+				"c=3; " + expiresIn(1),
+				"d=4; max-age=100",
+			},
+			"a=1 b=2 c=3 d=4",
+			[]query{{"http://www.host.test", "a=1 b=2 c=3 d=4"}},
+		}.run(t, jar)
+		time.Sleep(1005 * time.Millisecond)
+
+		jarTest{
+			"Check jar",
+			"http://www.host.test",
+			[]string{},
+			"a=1 d=4",
+			[]query{{"http://www.host.test", "a=1 d=4"}},
+		}.run(t, jar)
+
+		// make sure the expired cookies get reused
+		jarTest{
+			"Adding two more",
+			"http://www.host.test",
+			[]string{"e=5", "f=6"},
+			"a=1 d=4 e=5 f=6",
+			[]query{{"http://www.host.test", "a=1 d=4 e=5 f=6"}},
+		}.run(t, jar)
+		if f, ok := jar.content.(*flat); ok {
+			if len(*f) != 4 {
+				t.Errorf("Strange jar size %d", len(*f))
+			}
+		} else {
+			// TODO: test it here too?
+		}
+	}
+}
+
+// -------------------------------------------------------------------------
+// Test derived from chromiums cookie_store_unittest.h.
+// See http://src.chromium.org/viewvc/chrome/trunk/src/net/cookies/cookie_store_unittest.h?revision=159685&content-type=text/plain
+// Some of these tests (e.g. DomainWithTrailingDotTest) are in a bad condition
+// (aka buggy), so not all have been ported.
+
+func TestChromiumDomainTest(t *testing.T) {
+	for _, b := range []bool{true, false} {
+		jar := NewJar(b)
+		wwwGoogleIzzle := URL("http://www.google.izzle")
+		fooWwwGoogleIzzle := URL("http://foo.www.google.izzle")
+		aIzzle := URL("http://a.izzle")
+		barWwwGoogleIzzle := URL("http://bar.www.google.izzle")
+
+		jar.SetCookies(wwwGoogleIzzle, []*http.Cookie{parseCookie("A=B")})
+		if got := stringRep(jar.Cookies(wwwGoogleIzzle)); got != "A=B" {
+			t.Errorf("Got " + got)
+		}
+
+		jar.SetCookies(wwwGoogleIzzle, []*http.Cookie{parseCookie("C=D; domain=.google.izzle")})
+		if got := stringRep(jar.Cookies(wwwGoogleIzzle)); got != "A=B C=D" {
+			t.Errorf("Got " + got)
+		}
+
+		// verify A is a host cokkie and not accessible from subdomain
+		if got := stringRep(jar.Cookies(fooWwwGoogleIzzle)); got != "C=D" {
+			t.Errorf("Got " + got)
+		}
+
+		// verify domain cookies are found on proper domain
+		jar.SetCookies(wwwGoogleIzzle, []*http.Cookie{parseCookie("E=F; domain=.www.google.izzle")})
+		if got := stringRep(jar.Cookies(wwwGoogleIzzle)); got != "A=B C=D E=F" {
+			t.Errorf("Got " + got)
+		}
+
+		// leading dots in domain attributes are optional
+		jar.SetCookies(wwwGoogleIzzle, []*http.Cookie{parseCookie("G=H; domain=www.google.izzle")})
+		if got := stringRep(jar.Cookies(wwwGoogleIzzle)); got != "A=B C=D E=F G=H" {
+			t.Errorf("Got " + got)
+		}
+
+		// verify domain enforcement works (this one is bogus if public
+		// suffixes are used: .izzle is considered a public suffix and
+		// the domain cookie is silently rejected.)
+		jar.SetCookies(wwwGoogleIzzle, []*http.Cookie{parseCookie("I=J; domain=.izzle")})
+		if got := stringRep(jar.Cookies(aIzzle)); got != "" {
+			t.Errorf("Got " + got)
+		}
+		jar.SetCookies(wwwGoogleIzzle, []*http.Cookie{parseCookie("K=L; domain=.bar.www.google.izzle")})
+		if got := stringRep(jar.Cookies(barWwwGoogleIzzle)); got != "C=D E=F G=H" {
+			t.Errorf("Got " + got)
+		}
+		if got := stringRep(jar.Cookies(wwwGoogleIzzle)); got != "A=B C=D E=F G=H" {
+			t.Errorf("Got " + got)
+		}
+	}
+}
+
+// tests which can be done with the help of jarTest
+var chromiumTests = []jarTest{
+	{"DomainWithTrailingDotTest: Trailing dots in domain attributes are illegal",
+		"http://www.google.com/",
+		[]string{"a=1; domain=.www.google.com.", "b=2; domain=.www.google.com.."},
+		"",
+		[]query{
 			{"http://www.google.com", ""},
 		},
 	},
-	{"http://a.b.c.d.com", "ValidSubdomainTest",
-		[]string{"a=1; domain=.a.b.c.d.com", "b=2; domain=.b.c.d.com",
-			"c=3; domain=.c.d.com", "d=4; domain=.d.com"},
-		[]expect{
-			{"http://a.b.c.d.com", "a=1; b=2; c=3; d=4"},
-			{"http://b.c.d.com", "b=2; c=3; d=4"},
-			{"http://c.d.com", "c=3; d=4"},
+	{"ValidSubdomainTest part 1: domain cookies on higer level domains are not" +
+		"visible on lower level domains",
+		"http://a.b.c.d.com",
+		[]string{
+			"a=1; domain=.a.b.c.d.com",
+			"b=2; domain=.b.c.d.com",
+			"c=3; domain=.c.d.com",
+			"d=4; domain=.d.com"},
+		"a=1 b=2 c=3 d=4",
+		[]query{
+			{"http://a.b.c.d.com", "a=1 b=2 c=3 d=4"},
+			{"http://b.c.d.com", "b=2 c=3 d=4"},
+			{"http://c.d.com", "c=3 d=4"},
 			{"http://d.com", "d=4"},
 		},
 	},
-	{"http://a.b.c.d.com", "ValidSubdomainTest part 2",
-		[]string{"a=1; domain=.a.b.c.d.com", "b=2; domain=.b.c.d.com",
-			"c=3; domain=.c.d.com", "d=4; domain=.d.com",
-			"X=bcd; domain=.b.c.d.com", "X=cd; domain=.c.d.com"},
-		[]expect{
-			{"http://b.c.d.com", "b=2; c=3; d=4; X=bcd; X=cd"},
-			{"http://c.d.com", "c=3; d=4; X=cd"},
+	{"ValidSubdomainTest part 2: 'same' cookie on several sub-domains",
+		"http://a.b.c.d.com",
+		[]string{
+			"a=1; domain=.a.b.c.d.com",
+			"b=2; domain=.b.c.d.com",
+			"c=3; domain=.c.d.com",
+			"d=4; domain=.d.com",
+			"X=bcd; domain=.b.c.d.com",
+			"X=cd; domain=.c.d.com"},
+		"X=bcd X=cd a=1 b=2 c=3 d=4",
+		[]query{
+			{"http://b.c.d.com", "b=2 c=3 d=4 X=bcd X=cd"},
+			{"http://c.d.com", "c=3 d=4 X=cd"},
 		},
 	},
-	{"http://foo.bar.com", "InvalidDomainTest",
+	{"InvalidDomainTest 1: ignore cookies whose domain attribute does not match originatin domain",
+		"http://foo.bar.com",
 		[]string{"a=1; domain=.yo.foo.bar.com",
 			"b=2; domain=.foo.com",
 			"c=3; domain=.bar.foo.com",
@@ -549,333 +679,400 @@ var singleJarTests = []jarTest{
 			"n=14; domain=.foo.bar.com:",
 			"o=15; domain=.foo.bar.com#sup",
 		},
-		[]expect{{"http://foo.bar.com", ""}},
+		"", // jar is empty
+		[]query{{"http://foo.bar.com", ""}},
 	},
-	{"http://foo.com.com", "InvalidDomainTest part 2",
+	{"InvalidDomainTest 2: special case with same domain and registry",
+		"http://foo.com.com",
 		[]string{"a=1; domain=.foo.com.com.com"},
-		[]expect{{"http://foo.bar.com", ""}},
+		"",
+		[]query{{"http://foo.bar.com", ""}},
 	},
-	{"http://manage.hosted.filefront.com", "DomainWithoutLeadingDotTest 1",
-		[]string{"A=a; domain=filefront.com"},
-		[]expect{{"http://www.filefront.com", "A=a"}},
+	{"DomainWithoutLeadingDotTest 1: Leading dot is optional for domain cookies",
+		"http://manage.hosted.filefront.com",
+		[]string{"a=1; domain=filefront.com"},
+		"a=1",
+		[]query{{"http://www.filefront.com", "a=1"}},
 	},
-	{"http://www.google.com", "DomainWithoutLeadingDotTest 2",
+	{"DomainWithoutLeadingDotTest 2: still domain cookie, even if domain and " +
+		"domain attribute match exactly",
+		"http://www.google.com",
 		[]string{"a=1; domain=www.google.com"},
-		[]expect{
+		"a=1",
+		[]query{
 			{"http://www.google.com", "a=1"},
 			{"http://sub.www.google.com", "a=1"},
 			{"http://something-else.com", ""},
 		},
 	},
-	{"http://www.google.com", "CaseInsensitiveDomainTest",
+	{"CaseInsensitiveDomainTest",
+		"http://www.google.com",
 		[]string{"a=1; domain=.GOOGLE.COM", "b=2; domain=.www.gOOgLE.coM"},
-		[]expect{{"http://www.google.com", "a=1; b=2"}},
+		"a=1 b=2",
+		[]query{{"http://www.google.com", "a=1 b=2"}},
 	},
-	{"http://1.2.3.4/weee", "TestIpAddress",
-		[]string{"A=B; path=/"},
-		[]expect{{"http://1.2.3.4/weee", "A=B"}},
+	{"TestIpAddress 1: allow host cookies on IP address",
+		"http://1.2.3.4/foo",
+		[]string{"a=1; path=/"},
+		"a=1",
+		[]query{{"http://1.2.3.4/foo", "a=1"}},
 	},
-	{"http://com/", "TestNonDottedAndTLD: allow on com but only as host cookie",
+	{"TestIpAddress 2: disallow domain cookies on IP address",
+		"http://1.2.3.4/foo",
+		[]string{"a=1; domain=.1.2.3.4", "b=2; domain=.3.4"},
+		"",
+		[]query{{"http://1.2.3.4/foo", ""}},
+	},
+	{"TestIpAddress 3: really disallow domain cookies on IP address (even if IE&FF allow this case)",
+		"http://1.2.3.4/foo",
+		[]string{"a=1; domain=1.2.3.4"},
+		"",
+		[]query{{"http://1.2.3.4/foo", ""}},
+	},
+	{"TestNonDottedAndTLD 1: allow on com but only as host cookie",
+		"http://com/",
 		[]string{"a=1", "b=2; domain=.com", "c=3; domain=com"},
-		[]expect{
+		"a=1",
+		[]query{
 			{"http://com/", "a=1"},
 			{"http://no-cookies.com/", ""},
 			{"http://.com/", ""},
 		},
 	},
-	{"http://com./index.html", "TestNonDottedAndTLD: treat com. same as com",
+	{"TestNonDottedAndTLD 2: treat com. same as com",
+		"http://com./index.html",
 		[]string{"a=1"},
-		[]expect{
+		"a=1",
+		[]query{
 			{"http://com./index.html", "a=1"},
 			{"http://no-cookies.com./index.html", ""},
 		},
 	},
-	{"http://a.b", "TestNonDottedAndTLD: cannot set host cookie from subdomain",
+	{"TestNonDottedAndTLD 3: cannot set host cookie from subdomain",
+		"http://a.b",
 		[]string{"a=1; domain=.b", "b=2; domain=b"},
-		[]expect{{"http://a.b", ""}},
+		"",
+		[]query{{"http://bar.foo", ""}},
 	},
-	{"http://google.com", "TestNonDottedAndTLD: same as above but for known TLD (com)",
+	{"TestNonDottedAndTLD 4: same as above but for known TLD (com)",
+		"http://google.com",
 		[]string{"a=1; domain=.com", "b=2; domain=com"},
-		[]expect{{"http://google.com", ""}},
+		"",
+		[]query{{"http://google.com", ""}},
 	},
-	{"http://google.co.uk", "TestNonDottedAndTLD: cannot set on TLD which is dotted",
+	{"TestNonDottedAndTLD 5: cannot set on TLD which is dotted",
+		"http://google.co.uk",
 		[]string{"a=1; domain=.co.uk", "b=2; domain=.uk"},
-		[]expect{
+		"",
+		[]query{
 			{"http://google.co.uk", ""},
 			{"http://else.co.com", ""},
 			{"http://else.uk", ""},
 		},
 	},
-	{"http://b", "TestNonDottedAndTLD: intranet URLs may set host cookies only",
+	{"TestNonDottedAndTLD 6: intranet URLs may set host cookies only",
+		"http://b",
 		[]string{"a=1", "b=2; domain=.b", "c=3; domain=b"},
-		[]expect{{"http://b", "a=1"}},
+		"a=1",
+		[]query{{"http://b", "a=1"}},
 	},
-	{"http://www.google.izzle", "PathTest",
-		[]string{"A=B; path=/wee"},
-		[]expect{
-			{"http://www.google.izzle/wee", "A=B"},
-			{"http://www.google.izzle/wee/", "A=B"},
-			{"http://www.google.izzle/wee/war", "A=B"},
-			{"http://www.google.izzle/wee/war/more/more", "A=B"},
+	{"TestHostEndsWithDot: this seemes to be disallowed by RFC6265 even if browsers do other",
+		"http://www.google.com",
+		[]string{"a=1", "b=2; domain=.www.google.com."},
+		"a=1",
+		[]query{{"http://www.google.com", "a=1"}},
+	},
+	{"PathTest",
+		"http://www.google.izzle",
+		[]string{"a=1; path=/wee"},
+		"a=1",
+		[]query{
+			{"http://www.google.izzle/wee", "a=1"},
+			{"http://www.google.izzle/wee/", "a=1"},
+			{"http://www.google.izzle/wee/war", "a=1"},
+			{"http://www.google.izzle/wee/war/more/more", "a=1"},
 			{"http://www.google.izzle/weehee", ""},
 			{"http://www.google.izzle/", ""},
 		},
 	},
 }
 
-func TestSingleJar(t *testing.T) {
-	for _, tt := range singleJarTests {
-		jar := NewJar(Default)
-		// fmt.Printf("\n%s\n", tt.description)
-		runJarTest(t, jar, tt)
-		// fmt.Printf("Jar now: %s\n\n", jar.content())
+func TestChromiumTestcases(t *testing.T) {
+	for _, test := range chromiumTests {
+		jar := NewJar(false)
+		test.run(t, jar)
+		jar = NewJar(true)
+		test.run(t, jar)
 	}
 }
 
-func (jar *Jar) content() string {
-	s := ""
-	for _, c := range jar.All(time.Now()) {
-		s += c.Name + "=" + c.Value + "   "
-	}
-	return s
-}
-
-// The following must be run in one batch against one jar each
-var groupedJarTests = [][]jarTest{
-	[]jarTest{
-		{"http://www.example.com", "Set some initial cookies",
-			[]string{"a=1", "b=2; secure", "c=3; httponly", "d=4; secure; httponly"},
-			[]expect{
-				{"http://www.example.com", "a=1; c=3"},
-				{"https://www.example.com", "a=1; b=2; c=3; d=4"},
-			},
-		},
-		/*  we're a http only jar....
-		{"ftp://www.example.com", "Cannot update HttpOnly cookie via ftp",
-			[]string{"a=11", "b=22; secure", "c=33; httponly", "d=44; secure; httponly"},
-			[]expect{
-				{"http://www.example.com", "a=11; c=3"},
-				{"https://www.example.com", "a=11; b=22; c=3; d=4"},
-			},
-		},
-		*/
-		{"http://www.example.com", "We can update all of them to new value via http",
-			[]string{"a=w", "b=x; secure", "c=y; httponly", "d=z; secure; httponly"},
-			[]expect{
-				{"http://www.example.com", "a=w; c=y"},
-				{"https://www.example.com", "a=w; b=x; c=y; d=z"},
-			},
-		},
-		{"http://www.example.com/", "We can clear a Secure flag from a http request",
-			[]string{"b=xx", "d=zz; httponly"},
-			[]expect{{"http://www.example.com", "a=w; b=xx; c=y; d=zz"}},
-		},
-		{"http://www.example.com/", "We can delete all of them",
-			[]string{"a=1; 0", //  delete via MaxAge
-				"b=2; -1",  // delete via Expires
-				"c=2; -2",  // delete via both
-				"d=4; -3"}, // Expires in futere but delete via MaxAge<0
-			[]expect{{"http://www.example.com", ""}},
-		},
+var chromiumDeletionTests = []jarTest{
+	{"TestCookieDeletion: Create session cookie a1",
+		"http://www.google.com",
+		[]string{"a=1"},
+		"a=1",
+		[]query{{"http://www.google.com", "a=1"}},
 	},
-	// Tests from http://src.chromium.org/viewvc/chrome/trunk/src/net/base/cookie_monster_unittest.cc
-	// now: http://src.chromium.org/viewvc/chrome/trunk/src/net/cookies/cookie_store_unittest.h
-	/***** original test from cookie monster, unused as we strip trailing dots from host
-	[]jarTest{
-		// 
-		{"http://www.google.com", "TestHostEndsWithDot 1",
-			[]string{"a=1"},
-			[]expect{{"http://www.google.com", "a=1"}},
-		},
-		{"http://www.google.com", "TestHostEndsWithDot 2",
-			[]string{"b=2; domain=.www.google.com."},
-			[]expect{{"http://www.google.com", "a=1"}},
-		},
-		{"http://www.google.com.", "TestHostEndsWithDot 3",
-			[]string{"b=2; domain=.google.com."},
-			[]expect{{"http://www.google.com.", "b=2"}},
-		},
+	{"TestCookieDeletion: Delete sc a1 via MaxAge",
+		"http://www.google.com",
+		[]string{"a=1; max-age=-1"},
+		"",
+		[]query{{"http://www.google.com", ""}},
 	},
-	******************************************************************/
-	[]jarTest{
-		// 
-		{"http://www.google.com", "TestHostEndsWithDot A",
-			[]string{"a=1"},
-			[]expect{
-				{"http://www.google.com", "a=1"},
-				{"http://www.google.com.", "a=1"},
-			},
-		},
-		{"http://www.google.com.", "TestHostEndsWithDot B",
-			[]string{"b=2"},
-			[]expect{
-				{"http://www.google.com", "a=1; b=2"},
-				{"http://www.google.com.", "a=1; b=2"},
-			},
-		},
-		{"http://www.google.com", "TestHostEndsWithDot C",
-			[]string{"c=3; domain=.google.com."},
-			[]expect{
-				{"http://www.google.com", "a=1; b=2"},
-				{"http://www.google.com.", "a=1; b=2"},
-			},
-		},
-		{"http://www.google.com.", "TestHostEndsWithDot D",
-			[]string{"d=4; domain=.google.com."},
-			[]expect{
-				{"http://www.google.com", "a=1; b=2"},
-				{"http://www.google.com.", "a=1; b=2"},
-			},
-		},
+	{"TestCookieDeletion: Create session cookie b2",
+		"http://www.google.com",
+		[]string{"b=2"},
+		"b=2",
+		[]query{{"http://www.google.com", "b=2"}},
 	},
-	[]jarTest{
-		{"http://www.google.com", "TestCookieDeletion: Create session cookie",
-			[]string{"a=1"},
-			[]expect{{"http://www.google.com", "a=1"}},
-		},
-		{"http://www.google.com", "TestCookieDeletion: Delete sc via MaxAge",
-			[]string{"a=1; 0"},
-			[]expect{{"http://www.google.com", ""}},
-		},
-		{"http://www.google.com", "TestCookieDeletion: Create session cookie2",
-			[]string{"b=2"},
-			[]expect{{"http://www.google.com", "b=2"}},
-		},
-		{"http://www.google.com", "TestCookieDeletion: Delete sc 2 via Expires",
-			[]string{"b=2; -1"},
-			[]expect{{"http://www.google.com", ""}},
-		},
-
-		{"http://www.google.com", "TestCookieDeletion: Create persistent cookie",
-			[]string{"c=3; 401"},
-			[]expect{{"http://www.google.com", "c=3"}},
-		},
-		{"http://www.google.com", "TestCookieDeletion: Delete pc via MaxAge",
-			[]string{"c=3; 0"},
-			[]expect{{"http://www.google.com", ""}},
-		},
-		{"http://www.google.com", "TestCookieDeletion: Create persistant cookie2",
-			[]string{"d=4; 401"},
-			[]expect{{"http://www.google.com", "d=4"}},
-		},
-		{"http://www.google.com", "TestCookieDeletion: Delete pc 2 via Expires",
-			[]string{"d=4; -1"},
-			[]expect{{"http://www.google.com", ""}},
-		},
+	{"TestCookieDeletion: Delete sc b2 via Expires",
+		"http://www.google.com",
+		[]string{"b=2; " + expiresIn(-10)},
+		"",
+		[]query{{"http://www.google.com", ""}},
+	},
+	{"TestCookieDeletion: Create persistent cookie c3",
+		"http://www.google.com",
+		[]string{"c=3; max-age=3600"},
+		"c=3",
+		[]query{{"http://www.google.com", "c=3"}},
+	},
+	{"TestCookieDeletion: Delete pc c3 via MaxAge",
+		"http://www.google.com",
+		[]string{"c=3; max-age=-1"},
+		"",
+		[]query{{"http://www.google.com", ""}},
+	},
+	{"TestCookieDeletion: Create persistant cookie d4",
+		"http://www.google.com",
+		[]string{"d=4; max-age=3600"},
+		"d=4",
+		[]query{{"http://www.google.com", "d=4"}},
+	},
+	{"TestCookieDeletion: Delete pc d4 via Expires",
+		"http://www.google.com",
+		[]string{"d=4; " + expiresIn(-10)},
+		"",
+		[]query{{"http://www.google.com", ""}},
 	},
 }
 
-func TestGroupedJar(t *testing.T) {
-	for _, ttt := range groupedJarTests {
-		jar := NewJar(Default)
-		for _, tt := range ttt {
-			runJarTest(t, jar, tt)
+func TestChromiumCookieDeletion(t *testing.T) {
+	jar := NewJar(true)
+	for _, test := range chromiumDeletionTests {
+		test.run(t, jar)
+	}
+	jar = NewJar(false)
+	for _, test := range chromiumDeletionTests {
+		test.run(t, jar)
+	}
+}
+
+// -------------------------------------------------------------------------
+// Test for the other exported methods
+
+func TestAdd(t *testing.T) {
+	for _, b := range []bool{true, false} {
+		jar := NewJar(b)
+
+		// a=1 gets added, b=2 is ignored as already expired, c=3 is a session cookie
+		jar.Add([]Cookie{
+			Cookie{
+				Name: "a", Value: "1",
+				Domain:   "www.host.test",
+				Path:     "/foo",
+				Expires:  time.Now().Add(time.Hour),
+				Secure:   true,
+				HostOnly: false,
+			},
+			Cookie{
+				Name: "b", Value: "2",
+				Domain:  "www.host.test",
+				Path:    "/",
+				Expires: time.Now().Add(-time.Minute), // expired
+			},
+			Cookie{
+				Name: "c", Value: "3",
+				Domain:  "www.google.com",
+				Path:    "/",
+				Expires: time.Time{}, // zero value = session cookie
+			},
+		})
+		if jar.list() != "a=1 c=3" {
+			t.Fatalf("Wrong content. Got %q", jar.list())
+		}
+
+		// adding d=4
+		jar.Add([]Cookie{
+			Cookie{
+				Name: "d", Value: "4",
+				Domain:   "www.somewhere.else",
+				Path:     "/",
+				Expires:  time.Now().Add(time.Hour),
+				Secure:   true,
+				HostOnly: false,
+			},
+		})
+		if jar.list() != "a=1 c=3 d=4" {
+			t.Fatalf("Wrong content. Got %q", jar.list())
+		}
+
+		// updating a
+		jar.Add([]Cookie{
+			Cookie{
+				Name: "a", Value: "X",
+				Domain:     "www.host.test",
+				Path:       "/foo",
+				Expires:    time.Now().Add(time.Hour),
+				Secure:     false,
+				HostOnly:   true,
+				Created:    time.Now().Add(-time.Hour),
+				LastAccess: time.Now().Add(-time.Minute),
+			},
+		})
+		if jar.list() != "a=X c=3 d=4" {
+			t.Fatalf("Wrong content. Got %q", jar.list())
+		}
+		u := URL("http://www.host.test/foo/bar") // not https!
+		recieved := stringRep(jar.Cookies(u))
+		if recieved != "a=X" {
+			t.Errorf("Wrong cookies. Got %q", recieved)
 		}
 	}
 }
 
-func runJarTest(t *testing.T, jar *Jar, test jarTest) {
-	u, err := url.Parse(test.requestUrl)
-	if err != nil {
-		t.Fatalf("Unable to parse URL %s: %s", test.requestUrl, err.Error())
-	}
+func TestRemove(t *testing.T) {
+	for _, b := range []bool{true, false} {
+		jar := NewJar(b)
 
-	setcookies := make([]*http.Cookie, len(test.setCookies))
-	for i, cs := range test.setCookies {
-		setcookies[i] = parseCookie(cs)
-	}
-	jar.SetCookies(u, setcookies)
-
-	for _, exp := range test.expected {
-		u, err := url.Parse(exp.toUrl)
-		if err != nil {
-			t.Fatalf("Unable to parse URL %s: %s", test.requestUrl, err.Error())
+		jar.Add([]Cookie{
+			Cookie{
+				Name: "a", Value: "1",
+				Domain: "www.host.test",
+				Path:   "/foo",
+			},
+			Cookie{
+				Name: "a", Value: "2",
+				Domain: "www.host.test",
+				Path:   "/bar",
+			},
+			Cookie{
+				Name: "a", Value: "3",
+				Domain: "www.google.com",
+				Path:   "/bar",
+			},
+			Cookie{
+				Name: "b", Value: "4",
+				Domain: "www.google.com",
+				Path:   "/bar",
+			},
+		})
+		if jar.list() != "a=1 a=2 a=3 b=4" {
+			t.Fatalf("Wrong content. Got %q", jar.list())
 		}
-		cookies := jar.Cookies(u)
-		cs := make([]string, len(cookies))
-		for i, c := range cookies {
-			cs[i] = c.String()
-		}
-		serialized := strings.Join(cs, "; ")
 
-		if serialized != exp.cookies {
-			t.Errorf("Test %s: %s\nGot  %s\nWant %s",
-				test.description, exp.toUrl, serialized, exp.cookies)
+		// cannot remove nonexisting cookie
+		if jar.Remove("www.host.test", "/bar", "x") {
+			t.Errorf("Could remove non-existing cookie x.")
+		}
+
+		// remove a=2
+		if !jar.Remove("www.host.test", "/bar", "a") {
+			t.Errorf("Could not remove cookie a=2.")
+		}
+		if jar.list() != "a=1 a=3 b=4" {
+			t.Fatalf("Wrong content. Got %q", jar.list())
+		}
+
+		// remove a=3
+		if !jar.Remove("www.google.com", "/bar", "a") {
+			t.Errorf("Could not remove cookie a=3.")
+		}
+		if jar.list() != "a=1 b=4" {
+			t.Fatalf("Wrong content. Got %q", jar.list())
+		}
+		// cannot remove an already removed cookie
+		if jar.Remove("www.google.com", "/bar", "a") {
+			t.Errorf("Could re-remove removed cookie a=3.")
 		}
 	}
-
 }
 
-// check if cs is contained in cookies.  cs has the format
-//    name [ '=' value ]
-// returns index into cookies or -1
-func index(cookies []*http.Cookie, cs string) int {
-	var name, value string
-	name = cs
-	if i := strings.Index(cs, "="); i != -1 {
-		name, value = cs[:i], cs[i+1:]
-		// fmt.Printf("name=%s value=%s\n", name, value)
-	}
+// -------------------------------------------------------------------------
+// Test update of LastAccess
 
-	for idx, c := range cookies {
-		if c.Name != name {
-			continue
+func TestLastAccess(t *testing.T) {
+	for _, b := range []bool{true, false} {
+		f := "Mon, 02 Jan 2006 15:04:05.9999999 MST" // RFC1123 with sub-musec precision
+		// helper to get the two cookies named "a" and "b" from a two-cookie jar.
+		aAndB := func(jar *Jar) (cookieA, cookieB Cookie) {
+			all := jar.All()
+			if len(all) != 2 {
+				panic(fmt.Sprintf("Expected two cookies. Got %", jar.list()))
+			}
+			// order in all is arbitary
+			if all[0].Name == "a" {
+				cookieA = all[0]
+				cookieB = all[1]
+			} else {
+				cookieA = all[1]
+				cookieB = all[0]
+			}
+			if cookieA.Name != "a" || cookieB.Name != "b" {
+				panic(fmt.Sprintf("Expected cookies a and b. Got %", jar.list()))
+			}
+			return
 		}
-		if value != "" && c.Value != value {
-			// fmt.Printf("bad value %s\n", c.Value)
-			continue
-		}
-		// fmt.Printf("found\n")
-		return idx
-	}
-	return -1
-}
 
-// not a full fletched parser, but enough for our testcases. Format is
-//    A=a; domain=xyz.com; path=/; secure; httponly; 34
-// Last integer is time to live and gets encoded the following way:
-//    ttl%4 == 0   -->  MaxAge=ttl
-//    ttl%4 == 1   -->  Expires=NOW+ttl
-//    ttl%4 == 2   -->  MaxAge=ttl; Expires=NOW+ttl
-//    ttl%4 == 3   -->  MaxAge=ttl; Expires=NOW-ttl
-func parseCookie(s string) *http.Cookie {
-	ss := strings.Split(s, "; ")
-	ab := strings.Split(ss[0], "=")
+		jar := NewJar(b)
+		t0 := time.Now().Add(-time.Second)
 
-	cookie := &http.Cookie{Name: ab[0], Value: ab[1]}
-	for _, part := range ss[1:] {
-		kv := strings.Split(part, "=")
-		switch kv[0] {
-		case "domain":
-			cookie.Domain = kv[1]
-		case "path":
-			cookie.Path = kv[1]
-		case "secure":
-			cookie.Secure = true
-		case "httponly":
-			cookie.HttpOnly = true
-		default:
-			sec, err := strconv.Atoi(kv[0])
-			if err != nil {
-				panic("Bad cookie line " + s)
-			}
-			mode := sec % 4
-			if mode < 0 {
-				mode = -mode
-			}
-			if mode != 2 {
-				if sec <= 0 {
-					cookie.MaxAge = -1
-				} else {
-					cookie.MaxAge = sec
-				}
-			}
-			if mode == 1 || mode == 2 {
-				cookie.Expires = time.Now().Add(time.Duration(sec) * time.Second)
-			} else if mode == 3 {
-				cookie.Expires = time.Now().Add(time.Duration(-sec) * time.Second)
-			}
+		jar.Add([]Cookie{
+			Cookie{
+				Name: "a", Value: "1",
+				Domain:     "www.host.test",
+				Path:       "/foo",
+				LastAccess: t0,
+			},
+			Cookie{
+				Name: "b", Value: "2",
+				Domain:     "www.host.test",
+				Path:       "/bar",
+				LastAccess: t0,
+			},
+		})
+
+		// access a=1
+		u := URL("http://www.host.test/foo/bar")
+		recieved := stringRep(jar.Cookies(u))
+		if recieved != "a=1" {
+			t.Errorf("Wrong cookies. Got %q", recieved)
+		}
+
+		// b=2 keeps last access time while a=1 gets its updated
+		cookieA, cookieB := aAndB(jar)
+		t1 := time.Now()
+		if !cookieA.LastAccess.After(t0) && cookieA.LastAccess.Before(t1) {
+			t.Errorf("Bad LastAccess %s. Should be between %s and %s",
+				cookieA.LastAccess.Format(f), t0.Format(f), t1.Format(f))
+		}
+		if cookieB.LastAccess != t0 {
+			t.Errorf("Bad LastAccess %s. Should equal %s",
+				cookieB.LastAccess.Format(f), t0.Format(f))
+		}
+
+		// access b=2
+		u = URL("http://www.host.test/bar")
+		recieved = stringRep(jar.Cookies(u))
+		if recieved != "b=2" {
+			t.Errorf("Wrong cookies. Got %q", recieved)
+		}
+
+		// b=2 now fresher than a=1
+		cookieA, cookieB = aAndB(jar)
+		if !cookieB.LastAccess.After(cookieA.LastAccess) {
+			t.Errorf("a: LastAccess=%s, b: LastAccess=%s",
+				cookieA.LastAccess.Format(f), cookieB.LastAccess.Format(f))
 		}
 	}
-	return cookie
 }

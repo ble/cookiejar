@@ -5,7 +5,6 @@
 package cookiejar
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -30,12 +29,11 @@ var domainRuleMatchTests = []struct {
 }
 
 func TestDomainRuleMatch(t *testing.T) {
-	for i, test := range domainRuleMatchTests {
-		domain := test.domain[:strings.LastIndex(test.domain, ".")]
-		m := test.rule.match(domain)
-		if m != test.match {
-			t.Errorf("%d: Rule %v, domain %s got %t want %t",
-				i, test.rule, test.domain, m, test.match)
+	for i, tt := range domainRuleMatchTests {
+		m := tt.rule.match(tt.domain)
+		if m != tt.match {
+			t.Errorf("%d: rule=%v, domain=%q, got %t, want %t",
+				i, tt.rule, tt.domain, m, tt.match)
 		}
 	}
 }
@@ -53,8 +51,8 @@ var findDomainRuleTests = []struct {
 	{"example.com", &domainRule{"", 0}},
 	{"uk.com", &domainRule{"uk", 0}},
 	{"example.uk.com", &domainRule{"uk", 0}},
-	{"pref.kyoto.jp", &domainRule{"pref.kyoto", 1}},
-	{"www.pref.kyoto.jp", &domainRule{"pref.kyoto", 1}},
+	{"city.kobe.jp", &domainRule{"city.kobe", 1}},
+	{"www.city.kobe.jp", &domainRule{"city.kobe", 1}},
 }
 
 func rulesEqual(r1, r2 *domainRule) bool {
@@ -68,21 +66,23 @@ func rulesEqual(r1, r2 *domainRule) bool {
 }
 
 func TestFindDomainRule(t *testing.T) {
-	for i, test := range findDomainRuleTests {
-		rule := findDomainRule(test.domain)
-		if !rulesEqual(rule, test.rule) {
-			t.Errorf("%d: %q got %v want %v", i, test.domain, rule, test.rule)
+	for i, tt := range findDomainRuleTests {
+		rule := findDomainRule(tt.domain)
+		if !rulesEqual(rule, tt.rule) {
+			t.Errorf("%d: %q got %v want %v", i, tt.domain, *rule, *tt.rule)
 		}
 	}
 }
 
-// test case table derived from http://publicsuffix.org/list/test.txt
-var effectiveTldPlusOneTests = []struct {
+// Test case table derived from
+// http://mxr.mozilla.org/mozilla-central/source/netwerk/test/unit/data/test_psl.txt?raw=1
+// See http://publicsuffix.org/list/ for details.
+var effectiveTLDPlusOneTests = []struct {
 	domain string
-	etldp1 string // etldp1=="" iff domain is public suffix 
+	etldp1 string
 }{
-	/***** We never use empty or mixed cases or leading dots *****
-	// NULL input.
+	/***** We never use empty domains, mixed cases or leading dots *****
+	// null input.
 	{"", ""},
 	// Mixed case.
 	{"COM", ""},
@@ -97,17 +97,15 @@ var effectiveTldPlusOneTests = []struct {
 
 	// Unlisted TLD.
 	{"example", ""},
-	{"example.example", ""},
-	{"b.example.example", ""},
-	{"a.b.example.example", ""},
+	{"example.example", "example.example"},
+	{"b.example.example", "example.example"},
+	{"a.b.example.example", "example.example"},
 
-	/******* These seem to be no longer listed.... **********
-	// Listed, but non-Internet, TLD.
-	{"local", ""},
-	{"example.local", ""},     
-	{"b.example.local", ""},   
-	{"a.b.example.local", ""}, 
-	*********************************************************/
+	// Listed, but non-Internet, TLD. (Yes, these are commented out in the original too.)
+	// {"local", ""},
+	// {"example.local", ""},
+	// {"b.example.local", ""},
+	// {"a.b.example.local", ""},
 
 	// TLD with only 1 rule.
 	{"biz", ""},
@@ -137,13 +135,14 @@ var effectiveTldPlusOneTests = []struct {
 	{"test.ac.jp", "test.ac.jp"},
 	{"www.test.ac.jp", "test.ac.jp"},
 	{"kyoto.jp", ""},
-	{"c.kyoto.jp", ""},
-	{"b.c.kyoto.jp", "b.c.kyoto.jp"},
-	{"a.b.c.kyoto.jp", "b.c.kyoto.jp"},
-	{"pref.kyoto.jp", "pref.kyoto.jp"},     // Exception rule.
-	{"www.pref.kyoto.jp", "pref.kyoto.jp"}, // Exception rule.
-	{"city.kyoto.jp", "city.kyoto.jp"},     // Exception rule.
-	{"www.city.kyoto.jp", "city.kyoto.jp"}, // Exception rule.
+	{"test.kyoto.jp", "test.kyoto.jp"},
+	{"ide.kyoto.jp", ""},
+	{"b.ide.kyoto.jp", "b.ide.kyoto.jp"},
+	{"a.b.ide.kyoto.jp", "b.ide.kyoto.jp"},
+	{"c.kobe.jp", ""},
+	{"b.c.kobe.jp", "b.c.kobe.jp"},
+	{"a.b.c.kobe.jp", "b.c.kobe.jp"},
+	{"city.kobe.jp", "city.kobe.jp"},
 	// TLD with a wildcard rule and exceptions.
 	{"om", ""},
 	{"test.om", ""},
@@ -163,20 +162,13 @@ var effectiveTldPlusOneTests = []struct {
 	{"www.test.k12.ak.us", "test.k12.ak.us"},
 }
 
-func TestEffectiveTldPlusOne(t *testing.T) {
-	for _, test := range effectiveTldPlusOneTests {
-		etldp1, tooShort := effectiveTldPlusOne(test.domain)
+func TestEffectiveTLDPlusOneTests(t *testing.T) {
+	for i, tt := range effectiveTLDPlusOneTests {
+		etldp1 := EffectiveTLDPlusOne(tt.domain)
 
-		if test.etldp1 == "" {
-			if !tooShort {
-				t.Errorf("Domain %s got %q %t\n[rule %v]",
-					test.domain, etldp1, tooShort,
-					findDomainRule(test.domain))
-			}
-		} else if test.etldp1 != etldp1 {
-			t.Errorf("Domain %s got %q %t want %q\n[rule %v]",
-				test.domain, etldp1, tooShort, test.etldp1,
-				findDomainRule(test.domain))
+		if etldp1 != tt.etldp1 {
+			t.Errorf("%d. domain=%q: got %q, want %q. rule was %v]",
+				i, tt.domain, etldp1, tt.etldp1, findDomainRule(tt.domain))
 		}
 	}
 }
@@ -185,7 +177,7 @@ var allowCookiesOnTests = []struct {
 	domain string
 	allow  bool
 }{
-	{"something.strange", false},
+	{"something.strange", true},
 	{"ourintranet", false},
 	{"com", false},
 	{"google.com", true},
@@ -194,62 +186,20 @@ var allowCookiesOnTests = []struct {
 	{"co.uk", false},
 	{"bbc.co.uk", true},
 	{"foo.www.bbc.co.uk", true},
-	{"bar.hokkaido.jp", false},
-	{"pref.hokkaido.jp", true},
+	{"kawasaki.jp", false},
+	{"bar.kawasaki.jp", false},
+	{"foo.bar.kawasaki.jp", true},
+	{"city.kawasaki.jp", true},
+	{"aichi.jp", false},
+	{"aisai.aichi.jp", false},
+	{"foo.aisai.aichi.jp", true},
 }
 
 func TestAllowCookiesOn(t *testing.T) {
-	for i, test := range allowCookiesOnTests {
-		allow := allowCookiesOn(test.domain)
-		if allow != test.allow {
-			t.Errorf("%d: Domain %q expected %t got %t",
-				i, test.domain, test.allow, allow)
+	for i, tt := range allowCookiesOnTests {
+		allow := allowDomainCookies(tt.domain)
+		if allow != tt.allow {
+			t.Errorf("%d: domain=%q expected %t got %t", i, tt.domain, tt.allow, allow)
 		}
-	}
-}
-
-func TestRuleCache(t *testing.T) {
-	theRuleCache = ruleCache{cache: make([]cacheEntry, 2)}
-
-	// Stuff in first a and then b
-	a, fa := theRuleCache.lookup("a")
-	if fa {
-		t.Errorf("Unexpected a got %v", *a)
-	}
-	theRuleCache.store("a", &domainRule{"a", 0})
-
-	b, fb := theRuleCache.lookup("b")
-	if fb {
-		t.Errorf("Unexpected b got %v", *b)
-	}
-	theRuleCache.store("b", &domainRule{"b", 0})
-
-	// look up a and b
-	x, fx := theRuleCache.lookup("a")
-	if !fx || x.rule != "a" {
-		t.Errorf("Bad %v", x)
-	}
-	x, fx = theRuleCache.lookup("b")
-	if !fx || x.rule != "b" {
-		t.Errorf("Bad %v", x)
-	}
-
-	// look up and stuff in c which overwrites a but keeps b
-	c, fc := theRuleCache.lookup("c")
-	if fc {
-		t.Errorf("Unexpected c got %v", *c)
-	}
-	theRuleCache.store("c", &domainRule{"c", 0})
-	x, fx = theRuleCache.lookup("c")
-	if !fx || x.rule != "c" {
-		t.Errorf("Bad %v", x)
-	}
-	a, fa = theRuleCache.lookup("a")
-	if fa {
-		t.Errorf("Unexpected a got %v", *a)
-	}
-	x, fx = theRuleCache.lookup("b")
-	if !fx || x.rule != "b" {
-		t.Errorf("Bad %v", x)
 	}
 }
