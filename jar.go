@@ -1,4 +1,4 @@
-// Copyright 2012 The Go Authors. All rights reserved.
+// Copyright 2012 Volker Dobler. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -10,7 +10,8 @@
 //
 package cookiejar
 
-// BUG(volker) Jar does not handle internationalized domain names (IDN).
+// BUG
+// Jar does not handle internationalized domain names (IDN).
 // The Jar should (but does not) transform the domain name of the URL
 // to punycode before matching the domain attribute of a recieved cookie.
 
@@ -60,10 +61,13 @@ type Jar struct {
 	sync.Mutex
 }
 
-// NewJar sets up a new cookie jar with MaxBytesPerCookie set to 4096.
-// The created jar won't accept host cookies for IP-addresses and won't
-// accept a domain cookie for a public suffix domain. If boxed then the
-// jar will use a boxed storage on the ETLD+1.
+// NewJar sets up an empty cookie jar.
+// A Jar with boxedStorage can handle cookies from lots of different
+// domains more efficient than a Jar with flat storage.
+//
+// The created Jar will allow 4096 bytes for Name plus Value, won't accpet
+// host cookies for IP-addresses and won't accept a domain cookie for a
+// known public suffix domain.
 func NewJar(boxedStorage bool) *Jar {
 	jar := Jar{
 		MaxBytesPerCookie:             4096,
@@ -366,11 +370,11 @@ func (jar *Jar) update(host, defaultpath string, recieved *http.Cookie) updateAc
 }
 
 var (
-	ErrNoHostname      = errors.New("No hostname (IP only) available")
-	ErrMalformedDomain = errors.New("Domain attribute of cookie is malformed")
-	ErrTLDDomainCookie = errors.New("No domain cookies for TLDs allowed")
-	ErrIllegalPSDomain = errors.New("Illegal cookie domain attribute for public suffix")
-	ErrBadDomain       = errors.New("Bad cookie domaine attribute")
+	errNoHostname      = errors.New("No hostname (IP only) available")
+	errMalformedDomain = errors.New("Domain attribute of cookie is malformed")
+	errTLDDomainCookie = errors.New("No domain cookies for TLDs allowed")
+	errIllegalPSDomain = errors.New("Illegal cookie domain attribute for public suffix")
+	errBadDomain       = errors.New("Bad cookie domaine attribute")
 )
 
 // domainAndType determines the Cookies Domain and HostOnly attribute.
@@ -391,28 +395,23 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 		}
 		// According to RFC 6265 domain-matching includes not beeing
 		// an IP address.
-		return "", false, ErrNoHostname
+		return "", false, errNoHostname
 	}
 
 	// If valid: A Domain Cookie (with one strange exeption).
 	// We note the fact "domain cookie" as hostOnly==false and strip
 	// possible leading "." from the domain.
 	domain = domainAttr
-	// fmt.Printf("AA %s\n", domain)
 	if domain[0] == '.' {
 		domain = domain[1:]
 	}
-	// fmt.Printf("BB %s\n", domain)
-	// TODO: handle IDN
-	domain = strings.ToLower(domain) // see RFC 6265 section 5.2.3
-	// fmt.Printf("CC %s\n", domain)
 
 	if len(domain) == 0 || domain[0] == '.' {
 		// we recieved either "Domain=." or "Domain=..some.thing"
 		// both are illegal
-		return "", false, ErrMalformedDomain
+		return "", false, errMalformedDomain
 	}
-	// fmt.Printf("DD %s\n", domain)
+	domain = strings.ToLower(domain) // see RFC 6265 section 5.2.3
 
 	if domain[len(domain)-1] == '.' {
 		// we recieved stuff like "Domain=www.example.com."
@@ -421,15 +420,13 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 		// requiering a reject.  4.1.2.3 is not normative, but
 		// "Domain Matching" (5.1.3) and "Canonicalized Host Names"
 		// (5.1.2) are.
-		return "", false, ErrMalformedDomain
+		return "", false, errMalformedDomain
 	}
-	// fmt.Printf("EE %s\n", domain)
 
 	// Never allow Domain Cookies for TLDs.  TODO: decide on "localhost".
 	if i := strings.Index(domain, "."); i == -1 {
-		return "", false, ErrTLDDomainCookie
+		return "", false, errTLDDomainCookie
 	}
-	// fmt.Printf("FF %s\n", domain)
 
 	if !jar.DomainCookiesOnPublicSuffixes {
 		// RFC 6265 section 5.3:
@@ -449,17 +446,15 @@ func (jar *Jar) domainAndType(host, domainAttr string) (domain string, hostOnly 
 			if host == domainAttr {
 				return host, true, nil
 			}
-			return "", false, ErrIllegalPSDomain
+			return "", false, errIllegalPSDomain
 		}
 	}
-	// fmt.Printf("GG %s\n", domain)
 
 	// domain must domain-match host:  www.mycompany.com cannot
 	// set cookies for .ourcompetitors.com.
 	if host != domain && !strings.HasSuffix(host, "."+domain) {
-		return "", false, ErrBadDomain
+		return "", false, errBadDomain
 	}
-	// fmt.Printf("HH %s\n", domain)
 
 	return domain, false, nil
 }

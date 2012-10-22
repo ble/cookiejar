@@ -1,4 +1,4 @@
-// Copyright 2012 The Go Authors. All rights reserved.
+// Copyright 2012 Volker Dobler. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -72,7 +72,7 @@ func main() {
 	}
 	resp.Body.Close()
 
-	fmt.Println("// Copyright 2012 The Go Authors. All rights reserved.")
+	fmt.Println("// Copyright 2012 Volker Dobler. All rights reserved.")
 	fmt.Println("// Use of this source code is governed by a BSD-style")
 	fmt.Println("// license that can be found in the LICENSE file.")
 	fmt.Println("")
