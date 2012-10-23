@@ -519,6 +519,60 @@ func TestCookieDeletion(t *testing.T) {
 	}
 }
 
+func TestMaxBytesPerCookie(t *testing.T) {
+	jar := NewJar(false)
+	jarTest{"Fill jar", "http://www.host.test",
+		[]string{"a=1", "longcookiename=2"},
+		"a=1 longcookiename=2",
+		[]query{{"http://www.host.test", "a=1 longcookiename=2"}},
+	}.run(t, jar)
+	jar.MaxBytesPerCookie = 8
+	jarTest{"Too big cookies", "http://www.host.test",
+		[]string{"b=3", "verylongcookiename=4", "c=verylongvalue"},
+		"a=1 b=3 longcookiename=2",
+		[]query{{"http://www.host.test", "a=1 longcookiename=2 b=3"}},
+	}.run(t, jar)
+}
+
+func TestHostCookieOnIP(t *testing.T) {
+	jar := NewJar(false)
+	jarTest{"Dissallow host cookie on IP", "http://127.0.0.1",
+		[]string{"a=1; domain=127.0.0.1"},
+		"",
+		[]query{{"http://127.0.0.1", ""}},
+	}.run(t, jar)
+	jar.HostCookieOnIP = true
+	jarTest{"Allow host cookie on IP", "http://127.0.0.1",
+		[]string{"b=2; domain=127.0.0.1"},
+		"b=2",
+		[]query{
+			{"http://127.0.0.1", "b=2"},
+			// The following cannot happen but does test the
+			// expected behaviour of beeing a host cookie.
+			{"http://www.127.0.0.1", ""},
+		},
+	}.run(t, jar)
+	f := jar.content.(*flat)
+	if (*f)[0].HostOnly != true {
+		t.Errorf("Not a host cookie.")
+	}
+}
+
+func TestDomainCookiesOnPublicSuffixes(t *testing.T) {
+	jar := NewJar(false)
+	jarTest{"Dissallow PS", "http://www.bbc.co.uk",
+		[]string{"a=1", "b=2; domain=co.uk"},
+		"a=1",
+		[]query{{"http://www.bbc.co.uk", "a=1"}},
+	}.run(t, jar)
+	jar.DomainCookiesOnPublicSuffixes = true
+	jarTest{"Allow PS", "http://www.bbc.co.uk",
+		[]string{"c=3; domain=co.uk"},
+		"a=1 c=3",
+		[]query{{"http://www.bbc.co.uk", "a=1 c=3"}},
+	}.run(t, jar)
+}
+
 func TestExpiration(t *testing.T) {
 	for _, b := range []bool{true, false} {
 		jar := NewJar(b)
