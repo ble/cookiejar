@@ -44,35 +44,30 @@ func findLabel(label string, nodes []Node) *Node {
 }
 
 func EffectiveTLDPlusOne(domain string) (ret string) {
-	fmt.Println(domain)
 	parts := strings.Split(domain, ".")
 	m := len(parts)
 	nodes := PublicSuffixes.Sub
 	var np *Node
 	for m > 0 {
 		m--
-		fmt.Printf("  m=%d  looking for %s\n", m, parts[m])
 		sub := findLabel(parts[m], nodes)
 		if sub == nil {
-			fmt.Printf("    not found\n")
 			m++
 			break
 		}
-		fmt.Printf("    found\n")
 		nodes = sub.Sub
 		np = sub
 	}
-	fmt.Printf("    np=%p m=%d\n", np, m)
 	// np now points to last matching node
 
 	if np == nil || np.Kind == None {
 		// no rule found, default is "*"
-		fmt.Printf("  no rule found m=%d (np=%p)\n", m, np)
-		if m >= 1 {
-			fmt.Printf("  --> m=%d >=1: %s\n", m, parts[m-1]+"."+parts[m])
-			return parts[m-1] + "." + parts[m]
+		if len(parts) == 2 {
+			return domain
+		} else if len(parts) > 2 {
+			i := len(parts) - 1
+			return parts[i-1] + "." + parts[i]
 		} else {
-			fmt.Printf("  --> m=%d <1: ''\n", m)
 			return ""
 		}
 	}
@@ -80,18 +75,13 @@ func EffectiveTLDPlusOne(domain string) (ret string) {
 	switch np.Kind {
 	case Normal:
 		m--
-		fmt.Printf("  normal rule m=%d\n", m)
 	case Exception:
-		fmt.Printf("  exexption rule. m=%d\n", m)
 	case Wildcard:
 		m -= 2
-		fmt.Printf("  wildcard rule. m=%d\n", m)
 	}
 	if m < 0 {
-		fmt.Printf("  --> m<0: ''\n")
 		return ""
 	}
-	fmt.Printf("  --> %s\n", strings.Join(parts[m:], "."))
 	return strings.Join(parts[m:], ".")
 }
 
