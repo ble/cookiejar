@@ -139,3 +139,35 @@ func TestAllowCookiesOn(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkAllowDomainCookies(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		for _, tt := range allowCookiesOnTests {
+			allowDomainCookies(tt.domain)
+		}
+	}
+}
+
+var unlistedDomains = []string{
+	"www.google.ch",
+	"www.123abc.com",
+	"www.aaaaaaa.com",
+	"www.ddddddd.com",
+	"www.iiiiiii.com",
+	"www.mmmmmmm.net",
+	"www.ppppppp.net",
+	"www.rrrrrrr.org",
+	"www.uuuuuuu.org",
+	"www.xxxxxxx.org",
+	"www.zzzzzzz.de",
+	"www.yyyyyyy.it",
+	"www.wwwwwww.jp",
+}
+
+func BenchmarkAllowULDomainCookies(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		for _, domain := range unlistedDomains {
+			allowDomainCookies(domain)
+		}
+	}
+}
