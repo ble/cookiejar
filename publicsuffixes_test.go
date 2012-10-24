@@ -8,72 +8,6 @@ import (
 	"testing"
 )
 
-var domainRuleMatchTests = []struct {
-	rule   domainRule
-	domain string
-	match  bool
-}{
-	{domainRule{"", 0}, "foo.com", true},
-	{domainRule{"foo", 0}, "foo.com", true},
-	{domainRule{"bar.foo", 0}, "foo.com", false},
-	{domainRule{"", 0}, "bar.foo.com", true},
-	{domainRule{"foo", 0}, "bar.foo.com", true},
-	{domainRule{"", 2}, "abc.net", true},
-	{domainRule{"xyz", 0}, "abc.net", false},
-	{domainRule{"abc", 1}, "abc.net", true},
-	{domainRule{"foo.abc", 1}, "abc.net", false},
-	{domainRule{"city.kyoto", 1}, "www.city.kyoto.jp", true},
-	{domainRule{"kyoto", 2}, "www.city.kyoto.jp", true},
-	{domainRule{"kyoto", 2}, "kyoto.jp", true},
-	{domainRule{"uk", 0}, "uk.com", true},
-}
-
-func TestDomainRuleMatch(t *testing.T) {
-	for i, tt := range domainRuleMatchTests {
-		m := tt.rule.match(tt.domain)
-		if m != tt.match {
-			t.Errorf("%d: rule=%v, domain=%q, got %t, want %t",
-				i, tt.rule, tt.domain, m, tt.match)
-		}
-	}
-}
-
-var findDomainRuleTests = []struct {
-	domain string
-	rule   *domainRule
-}{
-	{"notlisted", nil},
-	{"really.not.listed", nil},
-	{"biz", &domainRule{"", 0}},
-	{"domain.biz", &domainRule{"", 0}},
-	{"a.b.domain.biz", &domainRule{"", 0}},
-	{"com", &domainRule{"", 0}},
-	{"example.com", &domainRule{"", 0}},
-	{"uk.com", &domainRule{"uk", 0}},
-	{"example.uk.com", &domainRule{"uk", 0}},
-	{"city.kobe.jp", &domainRule{"city.kobe", 1}},
-	{"www.city.kobe.jp", &domainRule{"city.kobe", 1}},
-}
-
-func rulesEqual(r1, r2 *domainRule) bool {
-	if r1 == nil && r2 == nil {
-		return true
-	}
-	if (r1 != nil && r2 == nil) || (r1 == nil && r2 != nil) {
-		return false
-	}
-	return r1.rule == r2.rule && r1.kind == r2.kind
-}
-
-func TestFindDomainRule(t *testing.T) {
-	for i, tt := range findDomainRuleTests {
-		rule := findDomainRule(tt.domain)
-		if !rulesEqual(rule, tt.rule) {
-			t.Errorf("%d: %q got %v want %v", i, tt.domain, *rule, *tt.rule)
-		}
-	}
-}
-
 // Test case table derived from
 // http://mxr.mozilla.org/mozilla-central/source/netwerk/test/unit/data/test_psl.txt?raw=1
 // See http://publicsuffix.org/list/ for details.
@@ -96,6 +30,7 @@ var effectiveTLDPlusOneTests = []struct {
 	**************************************************************/
 
 	// Unlisted TLD.
+
 	{"example", ""},
 	{"example.example", "example.example"},
 	{"b.example.example", "example.example"},
@@ -143,6 +78,7 @@ var effectiveTLDPlusOneTests = []struct {
 	{"b.c.kobe.jp", "b.c.kobe.jp"},
 	{"a.b.c.kobe.jp", "b.c.kobe.jp"},
 	{"city.kobe.jp", "city.kobe.jp"},
+
 	// TLD with a wildcard rule and exceptions.
 	{"om", ""},
 	{"test.om", ""},
@@ -167,8 +103,8 @@ func TestEffectiveTLDPlusOneTests(t *testing.T) {
 		etldp1 := EffectiveTLDPlusOne(tt.domain)
 
 		if etldp1 != tt.etldp1 {
-			t.Errorf("%d. domain=%q: got %q, want %q. rule was %v]",
-				i, tt.domain, etldp1, tt.etldp1, findDomainRule(tt.domain))
+			t.Errorf("%d. domain=%q: got %q, want %q.",
+				i, tt.domain, etldp1, tt.etldp1)
 		}
 	}
 }
