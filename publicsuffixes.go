@@ -10,29 +10,6 @@ package cookiejar
 // level domain plus one" (etldp1) which are the registered
 // or registrable domains.
 // See http://publicsuffix.org/ for details.
-
-import (
-	"fmt"
-	"strings"
-)
-
-var _ = fmt.Printf
-
-// domainRule (together with a TLD) describes one rule in the list
-type domainRule struct {
-	rule string // the original rule stripped from tld, "!" and "*"
-	kind ruleKind
-}
-
-type ruleKind uint8
-
-const (
-	normalRule ruleKind = iota
-	exceptionRule
-	wildcardRule
-)
-
-// match decides if the rule r would match domain.
 //
 // From http://publicsuffix.org/list/:
 // A domain is said to match a rule if, when the domain and rule are both
@@ -42,105 +19,7 @@ const (
 // The domain may legitimately have labels remaining at the end of this
 // matching process.
 //
-func (r *domainRule) match(domain string) bool {
-	// Strip TLD from domain as rules are stored without TLD:
-	if i := strings.LastIndex(domain, "."); i != -1 {
-		domain = domain[:i]
-	}
-
-	if !strings.HasSuffix(domain, r.rule) {
-		return false //  rule: xyz.tld  domain: abc.tld
-	}
-	if len(domain) == len(r.rule) {
-		return true // rule: abc.tld  domain: abc.tld
-	}
-	// from here on: domain is longer than rule
-	if len(r.rule) == 0 || domain[len(domain)-len(r.rule)-1] == '.' {
-		return true // rule: abc.tld  domain: xyz.abc.tld
-	}
-
-	return false // rule: abc.tld  domain aaabc.tld
-}
-
-// effectiveTldPlusOne retrieves TLD + 1 respective the publicsuffix + 1.
-// For domains which are too short (tld ony, or publixsuffix only)
-// the empty string is returned.
-//
-func EffectiveTLDPlusOne(domain string) string {
-	// Algorithm
-	//    6. The public suffix is the set of labels from the domain which directly
-	//       match the labels of the prevailing rule (joined by dots).
-	//    7. The registered or registrable domain is the public suffix plus one
-	//       additional label.
-	rule := findDomainRule(domain)
-	// fmt.Printf("  rule for %s = %v\n", domain, rule)
-	labels := strings.Split(domain, ".")
-	var n int
-	if rule == nil {
-		// no rule from our list matches: default rule is "*"
-		n = 2
-	} else {
-		if rule.rule == "" {
-			n = 2
-		} else {
-			// +1 to get from . to parts, +1 as tld itself is
-			// stripped from r.rule and +1 as we want etld+1
-			n = strings.Count(rule.rule, ".") + 3
-		}
-		if rule.kind == exceptionRule {
-			n--
-		} else if rule.kind == wildcardRule {
-			n++
-		}
-
-	}
-
-	if n > len(labels) {
-		return ""
-	}
-
-	if n < len(labels) {
-		return strings.Join(labels[len(labels)-n:], ".")
-	}
-	return domain
-}
-
-// check whether domain is "specific" enough to allow domain cookies
-// to be set for this domain.
-func allowDomainCookies(domain string) bool {
-	// TODO: own algorithm to save unused string gymnastics
-	etldp1 := EffectiveTLDPlusOne(domain)
-	// fmt.Printf("  etldp1 = %s\n", etldp1)
-	return etldp1 != ""
-}
-
-// retrieve all necessary information from a psStorage ps.
-// covered is true if the domain was covered by a rule; if covered is false
-// all other return values are undefined.
-// allow indicates wheter to allow a cookie on domain or not.
-// etdl is the "effective TLD" for domain, i.e. the domain for which
-// cookies may be set. Its the public suffix plus one more label from
-// the domain.
-// Examples:
-//    info("something.strange")  ==  false, --, --
-//    info("ourintranet")        ==  false, --, --
-//    info("com")                ==  true, false, --
-//    info("google.com")         ==  true, true, google.com
-//    info("www.google.com")     ==  true, true, google.com
-//    info("uk")                 ==  true, false, --
-//    info("co.uk")              ==  true, false, --
-//    info("bbc.co.uk")          ==  true, true, bbc.co.uk
-//    info("foo.www.bbc.co.uk")  ==  true, true, bbc.co.uk
-// Algorithm
-//    6. The public suffix is the set of labels from the domain which directly 
-//       match the labels of the prevailing rule (joined by dots).
-//    7. The registered or registrable domain is the public suffix plus one 
-//       additional label.
-//
-
-// findDomainRule looks up the matching rule in our domainRules list.
-//
-// Algorithm from http://publicsuffix.org/list/:
+// Algorithm from http://publicsuffix.org/list/
 //    1. Match domain against all rules and take note of the matching ones.
 //    2. If no rules match, the prevailing rule is "*".
 //    3. If more than one rule matches, the prevailing rule is the one which
@@ -153,31 +32,140 @@ func allowDomainCookies(domain string) bool {
 //       match the labels of the prevailing rule (joined by dots).
 //    7. The registered or registrable domain is the public suffix plus one
 //       additional label.
+// As this algorithm is prohibitive slow we store the list of rules as
+// a tree and search this tree for a longest match.  Beeing an exception rule
+// is stored naturaly on the node.  Wildcard rules are handled the same
+// A rule like "*.a.b" contains a node "a" and this node's kind is wildcard.
+// This data structure works as there are no two rules of the type.
+// "!a.b" and "*.a.b".
 //
-// We do not do step 5, this is the callers responsibility.
-func findDomainRule(domain string) (rule *domainRule) {
-	// extract TLD from domain and look up list of rules for
-	// this TLD if present
-	var tld string
-	if i := strings.LastIndex(domain, "."); i != -1 {
-		tld = domain[i+1:]
-	} else {
-		tld = domain
-	}
-	rules, ok := domainRules[tld]
-	if !ok {
+
+import (
+	"strings"
+)
+
+// Rule is the type or kind of a rule in the public suffix list
+type Rule uint8
+
+const (
+	None      Rule = iota // not a rule, just internal node
+	Normal                // a normal rule like "com.ac"
+	Exception             // an exception rule like "!city.kobe.jp"
+	Wildcard              // a wildcard rule like "*.ar"
+)
+
+// Node describes a single label in public suffix rule.
+// The list of rules is stored as a tree of Node nodes.
+type Node struct {
+	Label string
+	Kind  Rule
+	Sub   []Node
+}
+
+// findLabel looks up the node with label in nodes.
+func findLabel(label string, nodes []Node) *Node {
+	N := len(nodes)
+	if N == 0 {
 		return nil
 	}
-	// fmt.Printf("Found %d rules on TLD %s domain=%s\n", len(rules), tld, domain)
-	// rules are sorted in presidence, so first match is the match
-	rule = nil
-	for i := range rules {
-		// fmt.Printf("  %d: %v  --> %t\n", i, rules[i], rules[i].match(domain))
-		if rules[i].match(domain) {
-			rule = &rules[i]
+
+	// Fibonacci search
+	// k, M := T[N].k, T[N].M
+	k := 0
+	for ; fibonacci[k] <= N; k++ {
+	}
+	k--
+	M := fibonacci[k+1] - N - 1
+	i, p, q := fibonacci[k]-1, fibonacci[k-1], fibonacci[k-2]
+
+	if label > nodes[i].Label {
+		i -= M
+		if p == 1 {
+			return nil
+		}
+		i += q
+		p -= q
+		q -= p
+	}
+
+	for {
+		if label == nodes[i].Label {
+			return &nodes[i]
+		}
+		if label < nodes[i].Label {
+			if q == 0 {
+				return nil
+			}
+			i -= q
+			p, q = q, p-q
+		} else {
+			if p == 1 {
+				return nil
+			}
+			i += q
+			p -= q
+			q -= p
+		}
+	}
+	panic("not reached")
+}
+
+// effectiveTldPlusOne retrieves TLD + 1 respective the publicsuffix + 1.
+// For domains which are too short (tld ony, or publixsuffix only)
+// the empty string is returned.
+//
+// Algorithm
+//    6. The public suffix is the set of labels from the domain which directly
+//       match the labels of the prevailing rule (joined by dots).
+//    7. The registered or registrable domain is the public suffix plus one
+//       additional label.
+func EffectiveTLDPlusOne(domain string) (ret string) {
+	parts := strings.Split(domain, ".")
+	m := len(parts)
+	nodes := PublicSuffixes.Sub
+	var np *Node
+	for m > 0 {
+		m--
+		sub := findLabel(parts[m], nodes)
+		if sub == nil {
+			m++
 			break
+		}
+		nodes = sub.Sub
+		np = sub
+	}
+	// np now points to last matching node
+
+	if np == nil || np.Kind == None {
+		// no rule found, default is "*"
+		if len(parts) == 2 {
+			return domain
+		} else if len(parts) > 2 {
+			i := len(parts) - 1
+			return parts[i-1] + "." + parts[i]
+		} else {
+			return ""
 		}
 	}
 
-	return rule
+	switch np.Kind {
+	case Normal:
+		m--
+	case Exception:
+	case Wildcard:
+		m -= 2
+	}
+	if m < 0 {
+		return ""
+	}
+	return strings.Join(parts[m:], ".")
+}
+
+// check whether domain is "specific" enough to allow domain cookies
+// to be set for this domain.
+func allowDomainCookies(domain string) bool {
+	// TODO: own algorithm to save unused string gymnastics
+	etldp1 := EffectiveTLDPlusOne(domain)
+	// fmt.Printf("  etldp1 = %s\n", etldp1)
+	return etldp1 != ""
 }

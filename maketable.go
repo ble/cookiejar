@@ -13,64 +13,101 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"sort"
+	"os"
 	"strings"
 	"time"
 )
 
 const tableUrl = "http://mxr.mozilla.org/mozilla-central/source/netwerk/dns/effective_tld_names.dat?raw=1"
 
-type domainRule struct {
-	rule string
-	kind uint8
+type ruleKind uint8
+
+const (
+	none ruleKind = iota // not a rule, just internal node
+	normalRule
+	exceptionRule
+	wildcardRule
+)
+
+type node struct {
+	label string
+	kind  ruleKind
+	sub   []node
 }
 
-// list of domainRules, sortable by exceptins first, then longer first
-type domainRules []domainRule
-
-func (r domainRules) Len() int { return len(r) }
-func (r domainRules) Less(i, j int) bool {
-	// expetion rules (kind==1) go first
-	if r[i].kind == 1 {
-		return true
+func findLabel(label string, nodes []node) *node {
+	// do *not* replace with binary search
+	for i := range nodes {
+		if nodes[i].label == label {
+			return &nodes[i]
+		}
 	}
-	if r[j].kind == 1 {
-		return false
-	}
-
-	// empty goes last
-	if r[i].rule == "" {
-		return false
-	}
-	if r[j].rule == "" {
-		return true
-	}
-
-	// more labels go to front, wildcard (kind==2) have one extra label
-	ni, nj := strings.Count(r[i].rule, "."), strings.Count(r[j].rule, ".")
-	if r[i].kind == 2 {
-		ni++
-	}
-	if r[j].kind == 2 {
-		nj++
-	}
-	return ni > nj
+	return nil
 }
-func (r domainRules) Swap(i, j int) { r[i], r[j] = r[j], r[i] }
+
+func insert(nl []node, parts []string) []node {
+	if len(parts) == 1 {
+		label := parts[0]
+		kind := normalRule
+		switch label[0] {
+		case '!':
+			kind = exceptionRule
+			label = label[1:]
+		case '*':
+			kind = wildcardRule
+			label = label[1:]
+		}
+		if w := findLabel(label, nl); w != nil {
+			if w.kind != none {
+				log.Fatalf("Duplicate rule for " + label)
+			}
+			w.kind = kind // just update kind
+			return nl
+		}
+		return append(nl, node{label, kind, nil})
+	}
+	last := len(parts)-1
+	label := parts[last]
+	w := findLabel(label, nl)
+	if w == nil {
+		nl = append(nl, node{label, none, nil})
+		w = & nl[len(nl)-1]
+	}
+	w.sub = insert(w.sub, parts[:last])
+	return nl
+}
+
+type nodeList []node
+
+func (t nodeList) Len() int { return len(t) }
+func (t nodeList) Less(i, j int) bool {
+	return t[i].label < t[j].label
+}
+func (t nodeList) Swap(i, j int) { t[i], t[j] = t[j], t[i] }
 
 func main() {
-	resp, err := http.Get(tableUrl)
+	var input io.Reader
+
+	if file, err := os.Open("effective_tld_names.dat"); err == nil {
+		defer file.Close()
+		input = file
+	} else {
+		resp, err := http.Get(tableUrl)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer resp.Body.Close()
+		input = resp.Body
+	}
+	all, err := ioutil.ReadAll(input)
 	if err != nil {
 		log.Fatal(err)
 	}
-	all, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-	resp.Body.Close()
 
 	fmt.Println("// Copyright 2012 Volker Dobler. All rights reserved.")
 	fmt.Println("// Use of this source code is governed by a BSD-style")
@@ -88,8 +125,7 @@ func main() {
 	fmt.Println("// See there for a description of the format and further details.")
 	fmt.Println("")
 
-	tlds := make([]string, 0)              // all TLDs which are used as key in rules
-	rules := make(map[string][]domainRule) // all raw rules bucket by tld
+	var root []node = make([]node, 0, 200)
 
 	// read in list: remove comments and empty lines, and fill tlds and rules
 	lines := strings.Split(string(all), "\n")
@@ -100,67 +136,55 @@ func main() {
 			continue
 		}
 
-		// seperate tld from rule
-		var tld string
-		var rule string
-		if i := strings.LastIndex(line, "."); i == -1 {
-			if strings.Index(line, "!") != -1 {
-				log.Printf("Oooops: cannot handle exception rule on tld %q", line)
-				continue
+		// saveguard for too fancy wildcards
+		if strings.Contains(line,"*") {
+			if strings.Contains(line[1:], "*") || len(line)<2 || line[1]!='.' {
+				log.Fatalf("Cannot handle complex wildcard rule %q", line)
 			}
-			tld = line
+			// transform "*.kobe.jp" to "*kobe.jp"
+			line = "*" + line[2:]
+		}
+
+		parts := strings.Split(line, ".")
+		root = insert(root, parts)
+	}
+
+	// write out data structure
+	fmt.Printf("var PublicSuffixes = Node{\"\", 0, []Node{\n")
+	printNodelist(root, 1)
+	fmt.Printf("}}\n")
+	fmt.Println()
+	fmt.Println("// the needed fibonacci numbers")
+	fmt.Printf("var fibonacci = []int{0, 1")
+	a, b := 0, 1
+	for b<longest {
+		n := a + b
+		fmt.Printf(", %d", n)
+		a, b = b, n
+	}
+	fmt.Printf("}\n")
+	fmt.Println()
+	//fmt.Println("// the needed fibonacci numbers")
+	// fmt.Printf("var fibonacci = []int{0, 1")
+
+}
+
+var longest int
+
+func printNodelist(list []node, indent int) {
+	sort.Sort(nodeList(list))
+	if len(list) > longest {
+		longest = len(list)
+	}
+	prefix := strings.Repeat("\t", indent)
+	for _, n := range list {
+		fmt.Printf("%s{%q, %d, ", prefix, n.label, n.kind)
+		if len(n.sub) == 0 {
+			fmt.Printf("nil},\n")
 		} else {
-			rule, tld = line[:i], line[i+1:]
+			fmt.Printf("[]Node{\n")
+			printNodelist(n.sub, indent+1)
+			fmt.Printf("%s},\n%s},\n", prefix, prefix)
 		}
-		if _, ok := rules[tld]; !ok {
-			tlds = append(tlds, tld)
-		}
-
-		// construct rule, handle expetions and wildcards
-		dr := domainRule{rule: rule, kind: 0}
-		if len(rule)>0 && (rule[0] == '*' || rule[0] == '!') {
-			k := rule[0]
-			rule = rule[1:]
-			if strings.Index(rule, "*") != -1 || strings.Index(rule, "!") != -1 {
-				log.Printf("Oooops: cannot handle fancy rule %c%s.%s", k, rule, tld)
-				continue
-			}
-			if k == '!' {
-				dr.kind = 1
-			} else {
-				dr.kind = 2
-				if len(rule) > 0 {
-					rule = rule[1:]
-				}
-			}
-			dr.rule = rule
-		}
-
-		rules[tld] = append(rules[tld], dr)
 	}
-
-	// sort the rules for each tld
-	for _, tld := range tlds {
-		sort.Sort(domainRules(rules[tld]))
-	}
-
-	fmt.Println("// domainRules maps TLDs to the list of rules belonging to this TLD.")
-	fmt.Println("var domainRules = map[string][]domainRule{")
-
-	sort.Strings(tlds)
-	for _, tld := range tlds {
-		fmt.Printf("\t%q: []domainRule{\n", tld)
-		for _, rule := range rules[tld] {
-			fmt.Printf("\t\tdomainRule{rule: %q", rule.rule)
-			switch rule.kind {
-			case 0: //
-			case 1: fmt.Printf(", kind: exceptionRule")
-			case 2: fmt.Printf(", kind: wildcardRule")
-			default: panic("No such kind")
-			}
-			fmt.Println("},")
-		}
-		fmt.Println("\t},")
-	}
-	fmt.Println("}")
 }
