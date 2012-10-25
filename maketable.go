@@ -153,11 +153,29 @@ func main() {
 	fmt.Printf("var PublicSuffixes = Node{\"\", 0, []Node{\n")
 	printNodelist(root, 1)
 	fmt.Printf("}}\n")
+	fmt.Println()
+	fmt.Println("// the needed fibonacci numbers")
+	fmt.Printf("var fibonacci = []int{0, 1")
+	a, b := 0, 1
+	for b<longest {
+		n := a + b
+		fmt.Printf(", %d", n)
+		a, b = b, n
+	}
+	fmt.Printf("}\n")
+	fmt.Println()
+	//fmt.Println("// the needed fibonacci numbers")
+	// fmt.Printf("var fibonacci = []int{0, 1")
+
 }
 
+var longest int
 
 func printNodelist(list []node, indent int) {
 	sort.Sort(nodeList(list))
+	if len(list) > longest {
+		longest = len(list)
+	}
 	prefix := strings.Repeat("\t", indent)
 	for _, n := range list {
 		fmt.Printf("%s{%q, %d, ", prefix, n.label, n.kind)

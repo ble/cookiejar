@@ -64,18 +64,50 @@ type Node struct {
 
 // findLabel looks up the node with label in nodes.
 func findLabel(label string, nodes []Node) *Node {
-	l, u := 0, len(nodes)-1
-	for l <= u {
-		m := (l + u) / 2
-		if nodes[m].Label == label {
-			return &nodes[m]
-		} else if nodes[m].Label < label {
-			l = m + 1
+	N := len(nodes)
+	if N == 0 {
+		return nil
+	}
+
+	// Fibonacci search
+	// k, M := T[N].k, T[N].M
+	k := 0
+	for ; fibonacci[k] <= N; k++ {
+	}
+	k--
+	M := fibonacci[k+1] - N - 1
+	i, p, q := fibonacci[k]-1, fibonacci[k-1], fibonacci[k-2]
+
+	if label > nodes[i].Label {
+		i -= M
+		if p == 1 {
+			return nil
+		}
+		i += q
+		p -= q
+		q -= p
+	}
+
+	for {
+		if label == nodes[i].Label {
+			return &nodes[i]
+		}
+		if label < nodes[i].Label {
+			if q == 0 {
+				return nil
+			}
+			i -= q
+			p, q = q, p-q
 		} else {
-			u = m - 1
+			if p == 1 {
+				return nil
+			}
+			i += q
+			p -= q
+			q -= p
 		}
 	}
-	return nil
+	panic("not reached")
 }
 
 // effectiveTldPlusOne retrieves TLD + 1 respective the publicsuffix + 1.
